@@ -1,20 +1,21 @@
 #!/usr/bin/env zsh
 
-# PATH recommended by brew doctor
-export PATH="/usr/local/bin:/usr/local/sbin:$PATH"
+# Homebrew path
+export PATH="/opt/homebrew/bin:$PATH"
 
-# Golang path setup
+# Golang setup
 export GOPATH=$HOME/code/go
 export PATH=$PATH:$GOPATH/bin
-export PATH="$HOME/.bin:$PATH"
 export GO111MODULE=auto
 
-# asdf version manager setup
-source $HOME/.asdf/asdf.sh
-source $HOME/.asdf/completions/asdf.bash
+# ASDF setup
+. /opt/homebrew/opt/asdf/libexec/asdf.sh
 
-# force usage of homebrew version of openssl on High Sierra
-export PATH="/usr/local/opt/openssl/bin:$PATH"
-
-# Yarn path support
+# Yarn setup
 export PATH="$HOME/.yarn/bin:$HOME/.config/yarn/global/node_modules/.bin:$PATH"
+export PATH="/opt/homebrew/opt/openssl@3/bin:$PATH"
+export PATH="/opt/homebrew/opt/postgresql@13/bin:$PATH"
+
+# Load environment secrets
+[[ -f ~/.zshrc.secrets.local ]] && source ~/.zshrc.secrets.local
+
