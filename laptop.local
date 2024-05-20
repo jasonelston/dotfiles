@@ -10,7 +10,6 @@ cask 'monodraw'
 cask 'google-chrome'
 
 # Development
-cask 'visual-studio-code'
 cask 'dbeaver-community'
 cask 'github'
 cask 'sourcetree'
