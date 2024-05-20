@@ -3,6 +3,9 @@
 # Homebrew path
 export PATH="/opt/homebrew/bin:$PATH"
 
+# Path
+export PATH="$HOME/.bin:$PATH"
+
 # Golang setup
 export GOPATH=$HOME/code/go
 export PATH=$PATH:$GOPATH/bin

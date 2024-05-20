@@ -1,0 +1,4 @@
+UnPlug 'vim-elixir'
+UnPlug 'vim-ruby'
+UnPlug 'vim-rails'
+UnPlug 'vim-rake'

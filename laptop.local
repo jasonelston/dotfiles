@@ -1,32 +1,46 @@
 brew bundle --file=- <<EOF
 # Productivity
-cask 'spectacle'
 cask '1password'
 cask 'spark'
 cask 'fantastical'
-cask 'skype'
 cask 'slack'
 cask 'whatsapp'
 cask 'omnigraffle'
 cask 'monodraw'
-cask 'skitch'
 cask 'google-chrome'
 
 # Development
 cask 'visual-studio-code'
-brew 'go', args: ['cross-compile-common']
 cask 'dbeaver-community'
-cask 'postico'
-cask 'dash'
-brew 'git-flow'
 cask 'github'
 cask 'sourcetree'
 cask 'vagrant'
 cask 'virtualbox'
 cask 'docker'
-cask 'kitematic'
 brew 'pandoc'
 
 EOF
 
-gem_install_or_update 'rubocop'
+default_docker_machine() {
+  docker-machine ls | grep -Fq "default"
+}
+
+if ! default_docker_machine; then
+  docker-machine create --driver virtualbox default
+fi
+
+default_docker_machine_running() {
+  default_docker_machine | grep -Fq "Running"
+}
+
+if ! default_docker_machine_running; then
+  docker-machine start default
+fi
+
+fancy_echo "Cleaning up old Homebrew formulae ..."
+brew cleanup
+
+if [ -r "$HOME/.rcrc" ]; then
+  fancy_echo "Updating dotfiles ..."
+  rcup
+fi
