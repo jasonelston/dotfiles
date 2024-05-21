@@ -1,0 +1,4 @@
+" set theme to gruvbox
+autocmd vimenter * ++nested colorscheme gruvbox
+" set gruvbox to dark mode
+set background=dark
