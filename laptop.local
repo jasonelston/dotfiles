@@ -18,6 +18,7 @@ cask 'virtualbox'
 cask 'docker'
 brew 'pandoc'
 brew 'nvim'
+cask 'iterm2'
 
 EOF
 
