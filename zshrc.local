@@ -10,6 +10,7 @@ export PATH="$HOME/.bin:$PATH"
 export GOPATH=$HOME/code/go
 export PATH=$PATH:$GOPATH/bin
 export GO111MODULE=auto
+export ASDF_GOLANG_MOD_VERSION_ENABLED=true
 
 # ASDF setup
 . /opt/homebrew/opt/asdf/libexec/asdf.sh
