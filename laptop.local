@@ -17,24 +17,27 @@ cask 'vagrant'
 cask 'docker'
 brew 'pandoc'
 brew 'nvim'
+brew 'starship'
 cask 'iterm2'
-
 EOF
 
-default_docker_machine() {
-  docker-machine ls | grep -Fq "default"
-}
-
-if ! default_docker_machine; then
-  docker-machine create --driver virtualbox default
+if [ ! -d "$HOME/dotfiles-local" ]; then
+  fancy_echo "$HOME/dotfiles-local is missing"
+  exit 1
 fi
 
-default_docker_machine_running() {
-  default_docker_machine | grep -Fq "Running"
-}
+if [ ! -d "$HOME/dotfiles-local/nvim" ]; then
+  fancy_echo "$HOME/dotfiles-local/nvim is missing"
+  exit 1
+fi
 
-if ! default_docker_machine_running; then
-  docker-machine start default
+if [ -d "$HOME/.config/nvim" ]; then
+  fancy_echo "$HOME/.config/nvim already exists, skipping!"
+fi
+
+if [ ! -d "$HOME/.config/nvim" ]; then
+  fancy_echo "Adding nvim config symlink to $HOME/.config/nvim"
+  ln -s $HOME/dotfiles-local/nvim $HOME/.config/nvim
 fi
 
 fancy_echo "Cleaning up old Homebrew formulae ..."

@@ -23,3 +23,5 @@ export PATH="/opt/homebrew/opt/postgresql@13/bin:$PATH"
 # Load environment secrets
 [[ -f ~/.zshrc.secrets.local ]] && source ~/.zshrc.secrets.local
 
+# use Startship as prompt
+eval "$(starship init zsh)"
