@@ -25,3 +25,12 @@ export PATH="/opt/homebrew/opt/postgresql@13/bin:$PATH"
 
 # use Startship as prompt
 eval "$(starship init zsh)"
+
+[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+
+# bun completions
+[ -s "/Users/jasonelston/.bun/_bun" ] && source "/Users/jasonelston/.bun/_bun"
+
+# bun
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
