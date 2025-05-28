@@ -1,6 +1,6 @@
 [user]
 	name = Jason Elston
-	email = jason@onezeroone.com.au
+	email = jason@snug.com
 [core]
 	quotepath = false
   editor = code --wait

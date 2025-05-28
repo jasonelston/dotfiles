@@ -23,14 +23,13 @@ export PATH="/opt/homebrew/opt/postgresql@13/bin:$PATH"
 # Load environment secrets
 [[ -f ~/.zshrc.secrets.local ]] && source ~/.zshrc.secrets.local
 
+# Windsurf
+export PATH="/Users/jasonelston/.codeium/windsurf/bin:$PATH"
+
+# Claude Code
+alias claude="/Users/jasonelston/.claude/local/claude"
+
 # use Startship as prompt
 eval "$(starship init zsh)"
 
 [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
-
-# bun completions
-[ -s "/Users/jasonelston/.bun/_bun" ] && source "/Users/jasonelston/.bun/_bun"
-
-# bun
-export BUN_INSTALL="$HOME/.bun"
-export PATH="$BUN_INSTALL/bin:$PATH"
