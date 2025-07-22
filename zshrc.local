@@ -4,7 +4,7 @@
 export PATH="/opt/homebrew/bin:$PATH"
 
 # Path
-export PATH="$HOME/.bin:$PATH"
+export PATH="${ASDF_DATA_DIR:-$HOME/.asdf}/shims:$HOME/.bin:$HOME/.claude/scripts:$PATH"
 
 # Golang setup
 export GOPATH=$HOME/code/go
@@ -17,19 +17,17 @@ export ASDF_GOLANG_MOD_VERSION_ENABLED=true
 
 # Yarn setup
 export PATH="$HOME/.yarn/bin:$HOME/.config/yarn/global/node_modules/.bin:$PATH"
+
+# SSL setup
 export PATH="/opt/homebrew/opt/openssl@3/bin:$PATH"
 export PATH="/opt/homebrew/opt/postgresql@13/bin:$PATH"
 
 # Load environment secrets
 [[ -f ~/.zshrc.secrets.local ]] && source ~/.zshrc.secrets.local
 
-# Windsurf
-export PATH="/Users/jasonelston/.codeium/windsurf/bin:$PATH"
-
-# Claude Code
-alias claude="/Users/jasonelston/.claude/local/claude"
 
 # use Startship as prompt
 eval "$(starship init zsh)"
 
+# FZF setup
 [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
