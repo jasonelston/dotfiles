@@ -1,5 +1,8 @@
 #!/usr/bin/env zsh
 
+# Set the default editor
+EDITOR="code"
+
 # Homebrew path
 export PATH="/opt/homebrew/bin:$PATH"
 
@@ -31,3 +34,9 @@ eval "$(starship init zsh)"
 
 # FZF setup
 [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+
+# Worktree navigation function (required because scripts can't change parent shell directory)
+cdwt() {
+  local cmd=$(command cdwt "$@")
+  [[ "$cmd" == cd* ]] && eval "$cmd"
+}
