@@ -1,5 +1,8 @@
 #!/usr/bin/env zsh
 
+# Amazon Q pre block. Keep at the top of this file.
+[[ -f "${HOME}/Library/Application Support/amazon-q/shell/zshrc.pre.zsh" ]] && builtin source "${HOME}/Library/Application Support/amazon-q/shell/zshrc.pre.zsh"
+
 # Set the default editor
 EDITOR="code"
 
@@ -7,16 +10,13 @@ EDITOR="code"
 export PATH="/opt/homebrew/bin:$PATH"
 
 # Path
-export PATH="${ASDF_DATA_DIR:-$HOME/.asdf}/shims:$HOME/.bin:$HOME/.claude/scripts:$PATH"
+export PATH="$HOME/.bin:$PATH"
 
 # Golang setup
 export GOPATH=$HOME/code/go
-export PATH=$PATH:$GOPATH/bin
+export PATH="$PATH:$GOPATH/bin"
 export GO111MODULE=auto
 export ASDF_GOLANG_MOD_VERSION_ENABLED=true
-
-# ASDF setup
-. /opt/homebrew/opt/asdf/libexec/asdf.sh
 
 # Yarn setup
 export PATH="$HOME/.yarn/bin:$HOME/.config/yarn/global/node_modules/.bin:$PATH"
@@ -27,7 +27,6 @@ export PATH="/opt/homebrew/opt/postgresql@13/bin:$PATH"
 
 # Load environment secrets
 [[ -f ~/.zshrc.secrets.local ]] && source ~/.zshrc.secrets.local
-
 
 # use Startship as prompt
 eval "$(starship init zsh)"
@@ -40,3 +39,15 @@ cdwt() {
   local cmd=$(command cdwt "$@")
   [[ "$cmd" == cd* ]] && eval "$cmd"
 }
+
+# Claude Code
+export PATH="$HOME/.claude/scripts:$PATH"
+
+# opencode
+export PATH="$HOME/.opencode/bin:$PATH"
+
+# ASDF setup. Keep towards the bottom of this file.
+export PATH="${ASDF_DATA_DIR:-$HOME/.asdf}/shims:$PATH"
+
+# Amazon Q post block. Keep at the bottom of this file.
+[[ -f "${HOME}/Library/Application Support/amazon-q/shell/zshrc.post.zsh" ]] && builtin source "${HOME}/Library/Application Support/amazon-q/shell/zshrc.post.zsh"
