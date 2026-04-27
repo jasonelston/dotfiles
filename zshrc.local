@@ -1,8 +1,5 @@
 #!/usr/bin/env zsh
 
-# Amazon Q pre block. Keep at the top of this file.
-[[ -f "${HOME}/Library/Application Support/amazon-q/shell/zshrc.pre.zsh" ]] && builtin source "${HOME}/Library/Application Support/amazon-q/shell/zshrc.pre.zsh"
-
 # Set the default editor
 EDITOR="code"
 
@@ -10,7 +7,7 @@ EDITOR="code"
 export PATH="/opt/homebrew/bin:$PATH"
 
 # Path
-export PATH="$HOME/.bin:$PATH"
+export PATH="$HOME/.bin:$HOME/.local/bin:$PATH"
 
 # Golang setup
 export GOPATH=$HOME/code/go
@@ -53,5 +50,12 @@ export PATH="$HOME/.opencode/bin:$PATH"
 # ASDF setup. Keep towards the bottom of this file.
 export PATH="${ASDF_DATA_DIR:-$HOME/.asdf}/shims:$PATH"
 
-# Kiro CLI post block. Keep at the bottom of this file.
-[[ -f "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh" ]] && builtin source "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh"
+# Worktrunk cli integration
+if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)"; fi
+
+# Sesh setup
+fpath=(~/.zsh/completions $fpath)
+autoload -U compinit && compinit
+
+# Zoxide setup
+eval "$(zoxide init zsh)"
