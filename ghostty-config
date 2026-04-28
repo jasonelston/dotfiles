@@ -1,0 +1,10 @@
+font-family=JetBrainsMono Nerd Font Mono
+font-size=14
+desktop-notifications = true
+keybind = shift+enter=text:\x1b\r
+keybind = opt+backspace=text:\x1b\x7f
+# Universal-search style: Cmd+K sends a tilde-terminated CSI sequence with
+# an out-of-range "F-key" code that tmux maps to User0 → opens
+# sesh-combined-picker. CSI-u (`u` terminator) is intercepted by tmux's
+# parser even with extended-keys off, so we use `~` here instead.
+keybind = cmd+k=text:\x1b[1;31337~

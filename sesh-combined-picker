@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Combined sesh + tmux-windows fuzzy picker.
+# Tags each line so the dispatcher knows whether to use `sesh connect`
+# or `sesh window`. Launched from a tmux display-popup; works standalone too.
+
+set -euo pipefail
+export PATH="$HOME/.fzf/bin:$HOME/.bin:/opt/homebrew/bin:$PATH"
+
+picker() {
+  sesh list -i --tmux --hide-attached 2>/dev/null | sed 's/^/[s] /'
+  tmux list-windows -a -F '[w] #{session_name}:#{window_index} #{window_name}#{?window_active, ✓,}#{?window_last_flag, ⏮,}#{?window_activity_flag, ⚡,}#{?window_bell_flag, 🔔,}#{?window_silence_flag, 💤,}#{?window_zoomed_flag, 🔍,} | #{pane_title}' 2>/dev/null
+  tmux list-panes -a -F '[p] #{session_name}:#{window_index}.#{pane_index} #{pane_current_command} | #{s|^/Users/jasonelston|~|:pane_current_path}' 2>/dev/null
+  sesh list -i -c                      2>/dev/null | sed 's/^/[c] /'
+  sesh list -i -z                      2>/dev/null | sed 's/^/[z] /'
+}
+
+selection=$(
+  picker | fzf --ansi --no-sort \
+    --prompt='sesh> ' \
+    --header='[s]ession  [w]indow  [c]onfig  [z]oxide   (Esc to cancel)' \
+    --header-first
+) || exit 0
+
+[[ -z "$selection" ]] && exit 0
+
+kind="${selection:0:3}"
+rest="${selection:4}"
+
+case "$kind" in
+  '[w]'|'[p]')
+    # First token is "session:idx" or "session:idx.pane" — switch-client handles both.
+    target="${rest%% *}"
+    exec tmux switch-client -t "$target"
+    ;;
+  *)
+    exec sesh connect "$rest"
+    ;;
+esac

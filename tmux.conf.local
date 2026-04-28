@@ -3,6 +3,13 @@ bind r source-file ~/.tmux.conf
 
 set -g mouse on
 
+# Surface activity and bells in window flags (#, !) and status line.
+# visual-activity off keeps the message from popping up; window flag is enough.
+set-window-option -g monitor-activity on
+set-window-option -g monitor-bell on
+set-option -g visual-activity off
+set-option -g visual-bell off
+
 set-option -g status-position top
 # set-window-option -g automatic-rename off
 
@@ -15,6 +22,11 @@ set-option -g status-position top
 set -g @catppuccin_flavor "mocha"
 set -g @catppuccin_window_status_style "rounded"
 
+# Directory module: home-relative path so it stays informative even when
+# the dir basename matches the session name (common with sesh auto-naming).
+# Nested #{b:#{d:...}} doesn't compose in tmux 3.6, so use s| substitution.
+set -g @catppuccin_directory_text " #{s|^/Users/jasonelston|~|:pane_current_path}"
+
 # Load catppuccin
 run ~/.config/tmux/plugins/catppuccin/tmux/catppuccin.tmux
 
@@ -22,12 +34,24 @@ run ~/.config/tmux/plugins/catppuccin/tmux/catppuccin.tmux
 set -g status-right-length 100
 set -g status-left-length 100
 set -g status-left ""
-set -g status-right "#{E:@catppuccin_status_application}"
+# Refresh status line every second so the Claude pane_title spinner animates
+# smoothly and `application` / `directory` modules feel live.
+set -g status-interval 1
+
+set -g status-right "#{E:@catppuccin_status_directory}"
+set -ag status-right "#{E:@catppuccin_status_application}"
 set -ag status-right "#{E:@catppuccin_status_session}"
 
 # Sesh bindings
-bind-key "W" run-shell "sesh window \"$(sesh window | fzf-tmux -p 60%,50% --prompt '🪟  ')\""
-bind-key "K" display-popup -h 90% -w 50% -E "sesh picker -i"
+# bind-key "W" run-shell "sesh window \"$(sesh window | fzf-tmux -p 60%,50% --prompt '🪟  ')\""]
+bind-key "W" run-shell "sesh window $(sesh list -i | fzf-tmux -p 60%,50% --prompt '⚡ ')"
+bind-key "K" display-popup -h 80% -w 80% -E "/Users/jasonelston/dotfiles-local/sesh-combined-picker"
+
+# Cmd+K from Ghostty (no prefix). Ghostty sends \e[1;31337~ on Cmd+K;
+# tmux maps that byte sequence to User0 and triggers the same picker.
+# Tilde-terminated (not `u`) so tmux's CSI-u parser doesn't swallow it.
+set -s user-keys[0] "\033[1;31337~"
+bind-key -n User0 display-popup -h 80% -w 80% -E "/Users/jasonelston/dotfiles-local/sesh-combined-picker"
 bind-key x kill-pane # skip "kill-pane 1? (y/n)" prompt
 set -g detach-on-destroy off  # don't exit from tmux when closing a session
 
