@@ -8,3 +8,5 @@ keybind = opt+backspace=text:\x1b\x7f
 # sesh-combined-picker. CSI-u (`u` terminator) is intercepted by tmux's
 # parser even with extended-keys off, so we use `~` here instead.
 keybind = cmd+k=text:\x1b[1;31337~
+# Cmd+G: launches lazygit popup in the current pane's directory via tmux User1.
+keybind = cmd+g=text:\x1b[1;31338~

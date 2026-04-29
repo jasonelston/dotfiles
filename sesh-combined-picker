@@ -7,9 +7,15 @@ set -euo pipefail
 export PATH="$HOME/.fzf/bin:$HOME/.bin:/opt/homebrew/bin:$PATH"
 
 picker() {
+  # Windows first (=> bottom of fzf default layout, nearest cursor), sorted
+  # by window_activity descending so the most recently-active window sits
+  # right above the prompt. Window label prefers pane_title (Claude sets it
+  # to the session topic); falls back to window_name when pane_title is just
+  # the hostname (default for non-Claude windows).
+  tmux list-windows -a -F '#{window_activity}|[w] #{session_name}:#{window_index}#{?window_active, ✓,}#{?window_last_flag, ⏮,}#{?window_activity_flag, ⚡,}#{?window_bell_flag, 🔔,}#{?window_silence_flag, 💤,}#{?window_zoomed_flag, 🔍,} #{?#{==:#{pane_title},#H},#{window_name},#{pane_title}}' 2>/dev/null \
+    | sort -rn -t'|' -k1,1 | cut -d'|' -f2-
+
   sesh list -i --tmux --hide-attached 2>/dev/null | sed 's/^/[s] /'
-  tmux list-windows -a -F '[w] #{session_name}:#{window_index} #{window_name}#{?window_active, ✓,}#{?window_last_flag, ⏮,}#{?window_activity_flag, ⚡,}#{?window_bell_flag, 🔔,}#{?window_silence_flag, 💤,}#{?window_zoomed_flag, 🔍,} | #{pane_title}' 2>/dev/null
-  tmux list-panes -a -F '[p] #{session_name}:#{window_index}.#{pane_index} #{pane_current_command} | #{s|^/Users/jasonelston|~|:pane_current_path}' 2>/dev/null
   sesh list -i -c                      2>/dev/null | sed 's/^/[c] /'
   sesh list -i -z                      2>/dev/null | sed 's/^/[z] /'
 }
@@ -27,8 +33,7 @@ kind="${selection:0:3}"
 rest="${selection:4}"
 
 case "$kind" in
-  '[w]'|'[p]')
-    # First token is "session:idx" or "session:idx.pane" — switch-client handles both.
+  '[w]')
     target="${rest%% *}"
     exec tmux switch-client -t "$target"
     ;;

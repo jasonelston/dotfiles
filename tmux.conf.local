@@ -13,10 +13,12 @@ set-option -g visual-bell off
 set-option -g status-position top
 # set-window-option -g automatic-rename off
 
-# Needs to be set in .tmux.conf as doeesn't work here
-# set -g @plugin 'tmux-plugins/tpm'
-# set -g @plugin 'catpuccin/tmux'
-# set -g @plugin 'christoomey/vim-tmux-navigator'
+# Plugin definitions (work because ~/.tmux.conf now sources .local before
+# the TPM `run` line, so TPM picks up these @plugin entries on its scan).
+set -g @plugin 'tmux-plugins/tmux-continuum'
+set -g @continuum-restore 'on'                 # auto-restore on tmux start
+set -g @resurrect-capture-pane-contents 'on'   # save pane scrollback
+set -g @resurrect-strategy-nvim 'session'      # restore nvim sessions
 
 # Configure the catppuccin plugin
 set -g @catppuccin_flavor "mocha"
@@ -52,6 +54,16 @@ bind-key "K" display-popup -h 80% -w 80% -E "/Users/jasonelston/dotfiles-local/s
 # Tilde-terminated (not `u`) so tmux's CSI-u parser doesn't swallow it.
 set -s user-keys[0] "\033[1;31337~"
 bind-key -n User0 display-popup -h 80% -w 80% -E "/Users/jasonelston/dotfiles-local/sesh-combined-picker"
+
+# Lazygit launcher: prefix + g opens lazygit in a popup rooted at the
+# current pane's directory, so `g` always means "git in this repo".
+bind-key g display-popup -E -d "#{pane_current_path}" -w 90% -h 90% lazygit
+
+# Cmd+G from Ghostty (no prefix). Ghostty sends \e[1;31338~ on Cmd+G;
+# tmux maps that byte sequence to User1 and triggers the same popup.
+set -s user-keys[1] "\033[1;31338~"
+bind-key -n User1 display-popup -E -d "#{pane_current_path}" -w 90% -h 90% lazygit
+
 bind-key x kill-pane # skip "kill-pane 1? (y/n)" prompt
 set -g detach-on-destroy off  # don't exit from tmux when closing a session
 
