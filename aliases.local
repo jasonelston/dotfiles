@@ -6,4 +6,4 @@ alias pgstart="brew services start postgresql"
 alias pgstop="brew services stop postgresql"
 
 # Dotfiles and laptop build
-alias sysup="rcup && sh ~/laptop/mac 2>&1 | tee ~/laptop.log"
+alias sysup="rcup && sh ~/.laptop.local 2>&1 | tee ~/laptop.log"

@@ -1,21 +1,19 @@
+fancy_echo() {
+  local fmt="$1"; shift
+  # shellcheck disable=SC2059
+  printf "\n$fmt\n" "$@"
+}
+
 brew bundle --file=- <<EOF
 # Productivity
 cask '1password'
-cask 'spark'
 cask 'fantastical'
-cask 'slack'
 cask 'whatsapp'
-cask 'omnigraffle'
-cask 'monodraw'
 cask 'google-chrome'
 
 # Development
 cask 'dbeaver-community'
-cask 'github'
-cask 'sourcetree'
-cask 'vagrant'
-cask 'docker'
-cask 'iterm2'
+cask 'docker-desktop'
 cask 'ghostty'
 brew 'pandoc'
 brew 'nvim'
@@ -34,18 +32,10 @@ if [ ! -d "$HOME/dotfiles-local" ]; then
   exit 1
 fi
 
-if [ ! -d "$HOME/dotfiles-local/nvim" ]; then
-  fancy_echo "$HOME/dotfiles-local/nvim is missing"
-  exit 1
-fi
-
-if [ -d "$HOME/.config/nvim" ]; then
-  fancy_echo "$HOME/.config/nvim already exists, skipping!"
-fi
-
-if [ ! -d "$HOME/.config/nvim" ]; then
-  fancy_echo "Adding nvim config symlink to $HOME/.config/nvim"
-  ln -s "$HOME/dotfiles-local/nvim" "$HOME/.config/nvim"
+if [ ! -e "$HOME/.config/nvim" ]; then
+  fancy_echo "Adding nvim config symlink to $HOME/.config/nvim -> $HOME/dotfiles-local/lazyvim"
+  mkdir -p "$HOME/.config"
+  ln -s "$HOME/dotfiles-local/lazyvim" "$HOME/.config/nvim"
 fi
 
 # Ghostty config: rcm doesn't handle XDG paths, so symlink manually here.
