@@ -7,13 +7,22 @@ set -euo pipefail
 export PATH="$HOME/.fzf/bin:$HOME/.bin:/opt/homebrew/bin:$PATH"
 
 picker() {
-  # Windows first (=> bottom of fzf default layout, nearest cursor), sorted
-  # by window_activity descending so the most recently-active window sits
-  # right above the prompt. Window label prefers pane_title (Claude sets it
-  # to the session topic); falls back to window_name when pane_title is just
-  # the hostname (default for non-Claude windows).
-  tmux list-windows -a -F '#{window_activity}|[w] #{session_name}:#{window_index}#{?window_active, ✓,}#{?window_last_flag, ⏮,}#{?window_activity_flag, ⚡,}#{?window_bell_flag, 🔔,}#{?window_silence_flag, 💤,}#{?window_zoomed_flag, 🔍,} #{?#{==:#{pane_title},#H},#{window_name},#{pane_title}}' 2>/dev/null \
-    | sort -rn -t'|' -k1,1 | cut -d'|' -f2-
+  # Windows first (=> bottom of fzf default layout, nearest cursor). Sort tiers
+  # (printed first = closest to cursor, last = top of fzf):
+  #   0. current attached session's active window — you are here
+  #   1. other session's active window, by session_last_attached desc
+  #      (= "switch to recent session"; lands you on its current window)
+  #   2. current session's last window (prefix+L target)
+  #   3. other session's last window, by session_last_attached desc
+  #   4. current session's other windows, by window_index
+  #   5. other session's other windows, by session_last_attached desc + index
+  # Note: `window_active` is per-session — every session has exactly one.
+  # `window_last_flag` is also per-session (each session has its own prefix+L
+  # target). The ⏮ glyph is only shown when attached, since prefix+L only
+  # works in the session you're attached to — showing it for other sessions
+  # would be noise. The sort still ranks them in tier 3 internally.
+  tmux list-windows -a -F '#{?session_attached,#{?window_active,0,#{?window_last_flag,2,4}},#{?window_active,1,#{?window_last_flag,3,5}}}|#{session_last_attached}|#{window_index}|[w] #{session_name}:#{window_index}#{?window_active, ✓,}#{?session_attached,#{?window_last_flag, ⏮,},}#{?window_activity_flag, ⚡,}#{?window_bell_flag, 🔔,}#{?window_silence_flag, 💤,}#{?window_zoomed_flag, 🔍,} #{?#{==:#{pane_title},#H},#{window_name},#{pane_title}}' 2>/dev/null \
+    | sort -t'|' -k1,1n -k2,2rn -k3,3n | cut -d'|' -f4-
 
   sesh list -i --tmux --hide-attached 2>/dev/null | sed 's/^/[s] /'
   sesh list -i -c                      2>/dev/null | sed 's/^/[c] /'
