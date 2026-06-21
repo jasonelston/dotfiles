@@ -1,36 +1,177 @@
 #!/usr/bin/env bash
 # Combined sesh + tmux-windows fuzzy picker.
-# Tags each line so the dispatcher knows whether to use `sesh connect`
-# or `sesh window`. Launched from a tmux display-popup; works standalone too.
+#
+# Window ordering: per-window last-viewed timestamp.
+#   Two tmux hooks (session-window-changed for in-session switches,
+#   client-session-changed for cross-session attaches) append
+#   "@window_id:epoch" to ~/.cache/tmux-mru.log. The picker also bootstraps
+#   itself by logging the current active+attached window on every
+#   invocation — opening the picker implies "I just saw whatever was on
+#   screen," and this closes the gap where the active window of the
+#   attached session has no logged switch yet.
+#   The picker reads the log, dedupes by window_id (latest wins), and
+#   orders windows most-recently-viewed first.
+#
+# Windows with NO MRU entry display "-" in the time column (an honest "we
+# don't know"). They sort by session_last_attached so they cluster by
+# session at the far end of the list. We deliberately do NOT show a fake
+# time for unvisited windows: window_activity lies for Claude-streaming
+# panes ("now" even though you haven't looked) and sla lies for
+# recently-attached sessions ("now" for all 22 windows even though you
+# only viewed one).
+#
+# Marker column (left edge):
+#   *  = currently attached + active window (you are here)
+#   !  = pending decision needed (Claude waiting, [y/N] prompt, git conflict)
+#   ' ' = busy, idle, or just at a bare shell prompt
+#
+# "Waiting" detection cascade (per pane). Bare shell prompts are NOT marked
+# "!" — only real pending decisions earn it.
+#   1. Known TUI in pane_current_command (vim/less/htop/ssh/...) -> not waiting
+#   2. Shell as foreground process (zsh/bash/fish/sh): capture last 5 lines,
+#      mark "!" only on explicit question markers ([y/N], trailing ?, git
+#      conflict markers). Bare prompts stay blank.
+#   3. Other foreground (notably `node` = Claude Code): capture last 5 lines,
+#      mark "!" on Claude's input-box chars or question markers.
+#   pane_current_command is the tty's foreground process group (tcgetpgrp +
+#   proc_pidinfo on darwin); when the shell forks a child, current_command
+#   becomes the child's name. Shell-as-current_command reliably means "at
+#   prompt" — but a prompt alone isn't a pending decision.
+#
+# Layout: <marker> [w] <session:idx padded>  <time-ago right-aligned>  <name>
+#         <2 sp>   [s] <name>                                          (sesh rows)
+# Dispatcher strips the 2-char marker+space before parsing [w]/[s]/[c]/[z].
+#
+# fzf uses --tiebreak=index: exact matches bubble to the cursor on query,
+# empty-query view preserves recency order.
 
 set -euo pipefail
 export PATH="$HOME/.fzf/bin:$HOME/.bin:/opt/homebrew/bin:$PATH"
 
-picker() {
-  # Windows first (=> bottom of fzf default layout, nearest cursor). Sort tiers
-  # (printed first = closest to cursor, last = top of fzf):
-  #   0. current attached session's active window — you are here
-  #   1. other session's active window, by session_last_attached desc
-  #      (= "switch to recent session"; lands you on its current window)
-  #   2. current session's last window (prefix+L target)
-  #   3. other session's last window, by session_last_attached desc
-  #   4. current session's other windows, by window_index
-  #   5. other session's other windows, by session_last_attached desc + index
-  # Note: `window_active` is per-session — every session has exactly one.
-  # `window_last_flag` is also per-session (each session has its own prefix+L
-  # target). The ⏮ glyph is only shown when attached, since prefix+L only
-  # works in the session you're attached to — showing it for other sessions
-  # would be noise. The sort still ranks them in tier 3 internally.
-  tmux list-windows -a -F '#{?session_attached,#{?window_active,0,#{?window_last_flag,2,4}},#{?window_active,1,#{?window_last_flag,3,5}}}|#{session_last_attached}|#{window_index}|[w] #{session_name}:#{window_index}#{?window_active, ✓,}#{?session_attached,#{?window_last_flag, ⏮,},}#{?window_activity_flag, ⚡,}#{?window_bell_flag, 🔔,}#{?window_silence_flag, 💤,}#{?window_zoomed_flag, 🔍,} #{?#{==:#{pane_title},#H},#{window_name},#{pane_title}}' 2>/dev/null \
-    | sort -t'|' -k1,1n -k2,2rn -k3,3n | cut -d'|' -f4-
+MRU_LOG="$HOME/.cache/tmux-mru.log"
+MRU_CAP=100
 
-  sesh list -i --tmux --hide-attached 2>/dev/null | sed 's/^/[s] /'
-  sesh list -i -c                      2>/dev/null | sed 's/^/[c] /'
-  sesh list -i -z                      2>/dev/null | sed 's/^/[z] /'
+# Dedupe MRU log (latest epoch per window_id wins, chronological order
+# preserved) and cap at MRU_CAP entries. macOS has no `tac`, so awk handles
+# the reverse-traversal.
+trim_mru() {
+  [[ -f "$MRU_LOG" ]] || return 0
+  local tmp
+  tmp="$(mktemp "${MRU_LOG}.XXXXXX")"
+  awk -F: '
+    { line[NR] = $0; key[NR] = $1 }
+    END {
+      for (i = NR; i >= 1; i--) if (!seen[key[i]]++) keep[i] = 1
+      for (i = 1; i <= NR; i++) if (keep[i]) print line[i]
+    }
+  ' "$MRU_LOG" 2>/dev/null \
+    | tail -n "$MRU_CAP" > "$tmp" \
+    && mv "$tmp" "$MRU_LOG" \
+    || rm -f "$tmp"
+}
+
+picker() {
+  local now
+  now=$(date +%s)
+
+  # Bootstrap: opening the picker means "I was just looking at the current
+  # window." Log it so the active+attached window always has a truthful
+  # entry, even if no switch event has fired since the hooks were loaded.
+  local current_wid
+  current_wid=$(tmux display-message -p '#{window_id}' 2>/dev/null || true)
+  if [[ -n "$current_wid" ]]; then
+    mkdir -p "$(dirname "$MRU_LOG")"
+    echo "${current_wid}:${now}" >> "$MRU_LOG"
+  fi
+
+  trim_mru
+
+  # Stage 1 (awk): join MRU log into the window list, compute sort key and
+  # "X ago" label. Emit one pipe-separated record per window:
+  #   <sort_key>|<pane_id>|<cmd>|<active>|<attached>|<sess:idx>|<ago>|<name>
+  tmux list-windows -a -F \
+    '#{window_id}|#{session_last_attached}|#{window_activity}|#{session_name}|#{window_index}|#{pane_id}|#{pane_current_command}|#{?window_active,1,0}|#{?session_attached,1,0}|#{?#{==:#{pane_title},#H},#{window_name},#{pane_title}}' \
+    2>/dev/null \
+  | awk -F'|' -v now="$now" -v mrulog="$MRU_LOG" '
+      BEGIN {
+        while ((getline line < mrulog) > 0) {
+          n = split(line, p, ":")
+          if (n >= 2) mru[p[1]] = p[2]
+        }
+        close(mrulog)
+      }
+      function ago(ts,   d) {
+        d = now - ts
+        if (d < 60)    return "now"
+        if (d < 3600)  return int(d / 60)    "m ago"
+        if (d < 86400) return int(d / 3600)  "h ago"
+        return                int(d / 86400) "d ago"
+      }
+      {
+        wid=$1; sla=$2; sess=$4; idx=$5; pane=$6; cmd=$7;
+        active=$8; attached=$9; name=$10
+        # Tier-first sort: MRU-backed rows always cluster below unvisited
+        # rows in fzf default layout, regardless of timestamp values.
+        # Without this, MRU and SLA timestamps can interleave when both are
+        # recent (e.g. snugco:21 with stale MRU vs unvisited snugco windows
+        # whose SLA was bumped seconds ago when you re-attached).
+        #   tier 1 = MRU entry exists (truthful timestamp)
+        #   tier 0 = no MRU entry (display "-", sort by SLA within tier)
+        if (wid in mru) {
+          tier = 1
+          ts   = mru[wid]
+          disp = ago(mru[wid])
+        } else {
+          tier = 0
+          ts   = sla
+          disp = "-"
+        }
+        printf "%s|%s|%s|%s|%s|%s|%s:%s|%s|%s\n", \
+          tier, ts, pane, cmd, active, attached, sess, idx, disp, name
+      }
+    ' \
+  | sort -t'|' -k1,1rn -k2,2rn \
+  | while IFS='|' read -r _ _ pane cmd active attached sess_idx time_ago name; do
+      # Marker: "you are here" wins over "waiting".
+      marker=" "
+      if [[ "$active" == "1" && "$attached" == "1" ]]; then
+        marker="*"
+      else
+        case "$cmd" in
+          # Known TUIs / long-running fg processes: never waiting.
+          vim|nvim|less|man|htop|btop|top|tail|watch|ssh|tmux) : ;;
+          # Bare shell = at prompt, but a prompt alone isn't a pending
+          # decision. Mark "!" only on real questions / conflicts.
+          zsh|bash|fish|sh)
+            if tmux capture-pane -p -t "$pane" 2>/dev/null \
+                 | tail -n 5 \
+                 | grep -qE '\?[[:space:]]*$|\[[YyNn]/[YyNn]\]|\(y/n\)|<<<<<<<|>>>>>>>'; then
+              marker="!"
+            fi
+            ;;
+          # Other fg processes (notably `node` = Claude Code): peek for
+          # Claude's input-box chars or a generic question marker.
+          *)
+            if tmux capture-pane -p -t "$pane" 2>/dev/null \
+                 | tail -n 5 \
+                 | grep -qE '│ >|╭─|╰─|\?[[:space:]]*$|\[[YyNn]/[YyNn]\]'; then
+              marker="!"
+            fi
+            ;;
+        esac
+      fi
+      printf '%s [w] %-18s  %7s  %s\n' "$marker" "$sess_idx" "$time_ago" "$name"
+    done
+
+  # Non-window rows: 2-space prefix keeps the [X] tag at column 2 so the
+  # dispatcher's offset math works for every row type.
+  sesh list -i --tmux --hide-attached 2>/dev/null | sed 's/^/  [s] /'
+  sesh list -i -c                      2>/dev/null | sed 's/^/  [c] /'
+  sesh list -i -z                      2>/dev/null | sed 's/^/  [z] /'
 }
 
 selection=$(
-  picker | fzf --ansi --no-sort \
+  picker | fzf --ansi --tiebreak=index \
     --prompt='sesh> ' \
     --header='[s]ession  [w]indow  [c]onfig  [z]oxide   (Esc to cancel)' \
     --header-first
@@ -38,8 +179,10 @@ selection=$(
 
 [[ -z "$selection" ]] && exit 0
 
-kind="${selection:0:3}"
-rest="${selection:4}"
+# Layout per row: "<marker> [X] <payload>" where marker is 1 char (or space)
+# and [X] starts at column 2. Payload starts at column 6.
+kind="${selection:2:3}"
+rest="${selection:6}"
 
 case "$kind" in
   '[w]')
