@@ -51,6 +51,22 @@ export PATH="$HOME/.fzf/bin:$HOME/.bin:/opt/homebrew/bin:$PATH"
 MRU_LOG="$HOME/.cache/tmux-mru.log"
 MRU_CAP=100
 
+# Map a string to a deterministic 256-colour cube cell, clamped to channels
+# 2..5 so we avoid the near-black quadrant of the cube (the first non-black
+# shade is only ~37% intensity — naive `hash % 216` over-samples unreadable
+# cells). 4*4*4 = 64 readable colours, ample for ~30 windows.
+# Used to tint Claude session names so each session is visually distinct in
+# the picker. Claude Code itself doesn't expose a per-session colour we can
+# read — this is a self-assigned hash-of-pane_title approximation.
+colour_for() {
+  local hash r g b
+  hash=$(printf '%s' "$1" | cksum | awk '{print $1}')
+  r=$(( (hash       % 4) + 2 ))
+  g=$(( (hash / 4   % 4) + 2 ))
+  b=$(( (hash / 16  % 4) + 2 ))
+  printf '%d' $(( 16 + 36*r + 6*g + b ))
+}
+
 # Dedupe MRU log (latest epoch per window_id wins, chronological order
 # preserved) and cap at MRU_CAP entries. macOS has no `tac`, so awk handles
 # the reverse-traversal.
@@ -160,7 +176,17 @@ picker() {
             ;;
         esac
       fi
-      printf '%s [w] %-18s  %7s  %s\n' "$marker" "$sess_idx" "$time_ago" "$name"
+      # Colour Claude sessions so each session is visually distinct.
+      # Claude sets pane_title to "✳ <name>" idle, "<spinner> <name>" while
+      # streaming. Detect via ✳/✢ or braille-block spinner glyphs. Hash on
+      # sess_idx (e.g. "snugco:21") — stable across spinner frames so the
+      # colour doesn'\''t flicker.
+      if [[ "$name" == [⠀-⣿✳✢]* ]]; then
+        coloured_name=$(printf '\033[38;5;%sm%s\033[0m' "$(colour_for "$sess_idx")" "$name")
+      else
+        coloured_name="$name"
+      fi
+      printf '%s [w] %-18s  %7s  %s\n' "$marker" "$sess_idx" "$time_ago" "$coloured_name"
     done
 
   # Non-window rows: 2-space prefix keeps the [X] tag at column 2 so the
