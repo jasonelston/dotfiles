@@ -1,0 +1,17 @@
+#!/usr/bin/env zsh
+# Expose Homebrew's bin on PATH for NON-interactive `ssh host <cmd>` sessions
+# (notably mosh's `ssh host mosh-server …`). zsh sources only ~/.zshenv for those,
+# never ~/.zshrc.local where the interactive PATH is built — so without this,
+# Termius/mosh fails with "mosh-server: command not found". Termius mobile can't
+# pass an explicit `--server` path, so the fix has to live server-side, here.
+if [[ ! -o interactive ]]; then
+  export PATH="/opt/homebrew/bin:$PATH"
+fi
+
+# thoughtbot's ~/.zshenv prints a warning to stderr whenever .zshenv.local edits
+# PATH (it expects PATH work in .zshrc.local). That guidance targets the interactive
+# PATH; the entry above is deliberately non-interactive-only. Resync thoughtbot's
+# sentinel (set as `_old_path` in ~/.zshenv, same scope as this sourced file) so the
+# cosmetic warning never fires — critical because that stderr would otherwise corrupt
+# the output mosh's bootstrap parses.
+_old_path="$PATH"
