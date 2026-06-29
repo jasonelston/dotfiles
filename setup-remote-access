@@ -1,0 +1,188 @@
+#!/bin/sh
+# setup-remote-access — idempotent remote-access provisioning for this Mac.
+#
+# Run from laptop.local (via `sysup`), or standalone. Safe to run repeatedly:
+# every step checks state first and changes only what's needed. The same script
+# runs on any Mac (the mini or the laptop) — each machine generates its own
+# client key and enrols whatever device keys you've authorised locally.
+#
+# Covers: this machine's ed25519 client key (passphrase, stored in the macOS
+# keychain), authorized_keys enrolment from an optional gitignored seed file,
+# Tailscale + mosh status, Remote Login (SSH), no-idle-sleep on AC power, and
+# keys-only sshd hardening.
+#
+# Public keys are deliberately NOT committed — this repo is public. Keep your
+# device public keys in Apple Passwords. To authorise a device on a machine,
+# add its line to ~/.ssh/authorized_keys, or to the gitignored seed file
+# ($DOTFILES_LOCAL/authorized-keys.secret), then re-run `sysup`.
+#
+# Test hooks (used by the idempotency test, never in normal use):
+#   REMOTE_ACCESS_TEST=1             generate the key with no passphrase, no keychain
+#   REMOTE_ACCESS_SKIP_PRIVILEGED=1  skip the sudo steps (Remote Login, sleep, sshd)
+
+set -u
+
+fancy_echo() { printf "\n%s\n" "$*"; }
+
+DOTFILES_LOCAL="${DOTFILES_LOCAL:-$HOME/dotfiles-local}"
+SSH_DIR="$HOME/.ssh"
+KEY="$SSH_DIR/id_ed25519"
+AUTHORIZED_KEYS="$SSH_DIR/authorized_keys"
+SEED="$DOTFILES_LOCAL/authorized-keys.secret"
+SSHD_DROPIN="/etc/ssh/sshd_config.d/200-keys-only.conf"
+
+privileged_enabled() {
+  [ "${REMOTE_ACCESS_SKIP_PRIVILEGED:-0}" = "1" ] && return 1
+  # The privileged steps shell out to sudo, which needs an interactive terminal
+  # to prompt for a password. Skip cleanly when there's no TTY (e.g. an automated
+  # shell) rather than erroring on every sudo call.
+  [ -t 0 ] || return 1
+  return 0
+}
+
+ensure_ssh_dir() {
+  [ -d "$SSH_DIR" ] || mkdir -p "$SSH_DIR"
+  chmod 700 "$SSH_DIR"
+  [ -f "$AUTHORIZED_KEYS" ] || : > "$AUTHORIZED_KEYS"
+  chmod 600 "$AUTHORIZED_KEYS"
+}
+
+generate_client_key() {
+  if [ -f "$KEY" ]; then
+    fancy_echo "SSH client key already present: $KEY (skipping)."
+    return 0
+  fi
+  if [ "${REMOTE_ACCESS_TEST:-0}" = "1" ]; then
+    ssh-keygen -t ed25519 -C "$USER@$(hostname -s)" -f "$KEY" -N "" -q
+    return 0
+  fi
+  if [ ! -t 0 ]; then
+    fancy_echo "No TTY — skipping key generation. Run: ssh-keygen -t ed25519 -f $KEY"
+    return 0
+  fi
+  fancy_echo "Generating ed25519 SSH client key (you'll be prompted for a passphrase) ..."
+  ssh-keygen -t ed25519 -C "$USER@$(hostname -s)" -f "$KEY"
+  fancy_echo "Storing the passphrase in the macOS keychain ..."
+  ssh-add --apple-use-keychain "$KEY" 2>/dev/null \
+    || fancy_echo "Could not add to keychain automatically — run: ssh-add --apple-use-keychain $KEY"
+}
+
+print_pubkey() {
+  [ -f "$KEY.pub" ] || return 0
+  fancy_echo "This machine's public key — save to Apple Passwords and add to the OTHER machine's authorized_keys:"
+  cat "$KEY.pub"
+}
+
+enrol_authorized_keys() {
+  if [ ! -f "$SEED" ]; then
+    fancy_echo "No seed file at $SEED — authorise devices by adding pubkeys to $AUTHORIZED_KEYS (or create the seed)."
+    return 0
+  fi
+  while IFS= read -r line; do
+    case "$line" in
+      ssh-*|ecdsa-*|sk-*)
+        if ! grep -qxF "$line" "$AUTHORIZED_KEYS" 2>/dev/null; then
+          printf '%s\n' "$line" >> "$AUTHORIZED_KEYS"
+          fancy_echo "Authorised key from seed: $(printf '%s' "$line" | awk '{print $NF}')"
+        fi
+        ;;
+    esac
+  done < "$SEED"
+  chmod 600 "$AUTHORIZED_KEYS"
+}
+
+tailscale_bin() {
+  if command -v tailscale >/dev/null 2>&1; then echo "tailscale"
+  elif [ -x /usr/local/bin/tailscale ]; then echo "/usr/local/bin/tailscale"
+  elif [ -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]; then
+    echo "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+  fi
+}
+
+report_tailscale() {
+  ts="$(tailscale_bin)"
+  if [ -z "$ts" ]; then
+    fancy_echo "Tailscale not installed yet (laptop.local's Brewfile installs it). Re-run after install + login."
+    return 0
+  fi
+  if "$ts" status >/dev/null 2>&1; then
+    ip="$("$ts" ip -4 2>/dev/null)"
+    name="$("$ts" status --json 2>/dev/null | sed -n 's/.*"DNSName": *"\([^"]*\)".*/\1/p' | head -1 | sed 's/\.$//')"
+    fancy_echo "Tailscale up — ${name:-unknown} ($ip)"
+  else
+    fancy_echo "Tailscale installed but not logged in. Run: $ts up   then authenticate in the browser."
+  fi
+}
+
+report_mosh() {
+  if command -v mosh-server >/dev/null 2>&1; then
+    fancy_echo "mosh-server present: $(command -v mosh-server)"
+  else
+    fancy_echo "mosh not installed yet (laptop.local's Brewfile installs it)."
+  fi
+}
+
+enable_remote_login() {
+  privileged_enabled || { fancy_echo "Skipping Remote Login — needs sudo in an interactive terminal (run via sysup)."; return 0; }
+  if sudo systemsetup -getremotelogin 2>/dev/null | grep -qi "On"; then
+    fancy_echo "Remote Login (SSH) already on."
+    return 0
+  fi
+  fancy_echo "Enabling Remote Login (SSH) ..."
+  sudo systemsetup -setremotelogin on
+}
+
+prevent_idle_sleep() {
+  privileged_enabled || { fancy_echo "Skipping no-sleep — needs sudo in an interactive terminal (run via sysup)."; return 0; }
+  current="$(pmset -g custom 2>/dev/null | awk '/AC Power/{f=1} f && / sleep /{print $2; exit}')"
+  if [ "$current" = "0" ]; then
+    fancy_echo "AC idle sleep already disabled."
+    return 0
+  fi
+  fancy_echo "Disabling AC idle system sleep so the machine stays reachable (pmset -c sleep 0) ..."
+  sudo pmset -c sleep 0
+}
+
+harden_sshd() {
+  privileged_enabled || { fancy_echo "Skipping sshd hardening — needs sudo in an interactive terminal (run via sysup)."; return 0; }
+  # Never disable password auth unless a real key is already authorised, or a
+  # remote machine with no local console could be locked out.
+  if ! grep -q '^ssh-' "$AUTHORIZED_KEYS" 2>/dev/null; then
+    fancy_echo "No authorised keys yet — SKIPPING keys-only sshd hardening (would lock you out). Add a device key first."
+    return 0
+  fi
+  want='PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+PermitRootLogin no'
+  if [ -f "$SSHD_DROPIN" ] && [ "$(cat "$SSHD_DROPIN")" = "$want" ]; then
+    fancy_echo "Keys-only sshd drop-in already in place."
+    return 0
+  fi
+  fancy_echo "Installing keys-only sshd drop-in ($SSHD_DROPIN) ..."
+  sudo cp -p /etc/ssh/sshd_config "/etc/ssh/sshd_config.bak.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+  printf '%s\n' "$want" | sudo tee "$SSHD_DROPIN" >/dev/null
+  sudo chmod 644 "$SSHD_DROPIN"
+  if sudo sshd -t; then
+    fancy_echo "sshd config valid — password auth disabled, key auth only."
+  else
+    fancy_echo "sshd config INVALID — removing drop-in to stay safe."
+    sudo rm -f "$SSHD_DROPIN"
+  fi
+}
+
+main() {
+  fancy_echo "=== Remote-access setup for $(hostname -s) ==="
+  ensure_ssh_dir
+  generate_client_key
+  enrol_authorized_keys
+  report_tailscale
+  report_mosh
+  enable_remote_login
+  prevent_idle_sleep
+  harden_sshd
+  print_pubkey
+  fancy_echo "=== Remote-access setup complete ==="
+}
+
+main "$@"

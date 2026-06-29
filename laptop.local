@@ -25,6 +25,10 @@ brew 'sesh'
 brew 'fzf'
 brew 'zoxide'
 brew 'lazygit'
+
+# Remote access: Tailscale networking + mosh (resilient mobile shell)
+cask 'tailscale-app'
+brew 'mosh'
 EOF
 
 if [ ! -d "$HOME/dotfiles-local" ]; then
@@ -69,3 +73,8 @@ fi
 
 fancy_echo "Installing tmux plugins via TPM ..."
 "$HOME/.tmux/plugins/tpm/bin/install_plugins"
+
+# Remote access: client SSH key (keychain), authorized_keys enrolment, Tailscale
+# + mosh status, Remote Login, no-idle-sleep on AC, keys-only sshd. Idempotent.
+fancy_echo "Configuring remote access ..."
+sh "$HOME/dotfiles-local/setup-remote-access"
