@@ -51,6 +51,14 @@ export PATH="$HOME/.fzf/bin:$HOME/.bin:/opt/homebrew/bin:$PATH"
 MRU_LOG="$HOME/.cache/tmux-mru.log"
 MRU_CAP=100
 
+# Compact mode for narrow clients (phone portrait ≈ 48 cols): the normal row
+# format spends 35 fixed columns before the window name starts, which pushes
+# names off-screen on mobile. Compact shrinks padding, drops the " ago"
+# suffix, and trims fzf chrome. Threshold 70 keeps desktop untouched.
+CLIENT_WIDTH=$(tmux display-message -p '#{client_width}' 2>/dev/null || echo 999)
+COMPACT=0
+(( CLIENT_WIDTH < 70 )) && COMPACT=1 || true
+
 # Map a string to a deterministic 256-colour cube cell, clamped to channels
 # 2..5 so we avoid the near-black quadrant of the cube (the first non-black
 # shade is only ~37% intensity — naive `hash % 216` over-samples unreadable
@@ -108,7 +116,7 @@ picker() {
   tmux list-windows -a -F \
     '#{window_id}|#{session_last_attached}|#{window_activity}|#{session_name}|#{window_index}|#{pane_id}|#{pane_current_command}|#{?window_active,1,0}|#{?session_attached,1,0}|#{?#{==:#{pane_title},#H},#{window_name},#{pane_title}}' \
     2>/dev/null \
-  | awk -F'|' -v now="$now" -v mrulog="$MRU_LOG" '
+  | awk -F'|' -v now="$now" -v mrulog="$MRU_LOG" -v compact="$COMPACT" '
       BEGIN {
         while ((getline line < mrulog) > 0) {
           n = split(line, p, ":")
@@ -116,12 +124,13 @@ picker() {
         }
         close(mrulog)
       }
-      function ago(ts,   d) {
+      function ago(ts,   d, suffix) {
+        suffix = compact ? "" : " ago"
         d = now - ts
         if (d < 60)    return "now"
-        if (d < 3600)  return int(d / 60)    "m ago"
-        if (d < 86400) return int(d / 3600)  "h ago"
-        return                int(d / 86400) "d ago"
+        if (d < 3600)  return int(d / 60)    "m" suffix
+        if (d < 86400) return int(d / 3600)  "h" suffix
+        return                int(d / 86400) "d" suffix
       }
       {
         wid=$1; sla=$2; sess=$4; idx=$5; pane=$6; cmd=$7;
@@ -186,7 +195,13 @@ picker() {
       else
         coloured_name="$name"
       fi
-      printf '%s [w] %-18s  %7s  %s\n' "$marker" "$sess_idx" "$time_ago" "$coloured_name"
+      # Compact keeps the "<marker> [w] " prefix intact — the dispatcher's
+      # column-6 offset and first-word target parsing depend on it.
+      if (( COMPACT )); then
+        printf '%s [w] %-12s %4s %s\n' "$marker" "$sess_idx" "$time_ago" "$coloured_name"
+      else
+        printf '%s [w] %-18s  %7s  %s\n' "$marker" "$sess_idx" "$time_ago" "$coloured_name"
+      fi
     done
 
   # Non-window rows: 2-space prefix keeps the [X] tag at column 2 so the
@@ -196,12 +211,14 @@ picker() {
   sesh list -i -z                      2>/dev/null | sed 's/^/  [z] /'
 }
 
-selection=$(
-  picker | fzf --ansi --tiebreak=index \
-    --prompt='sesh> ' \
-    --header='[s]ession  [w]indow  [c]onfig  [z]oxide   (Esc to cancel)' \
-    --header-first
-) || exit 0
+fzf_opts=(--ansi --tiebreak=index --prompt='sesh> ' --header-first)
+if (( COMPACT )); then
+  fzf_opts+=(--header='s/w/c/z · Esc' --info=hidden --no-separator)
+else
+  fzf_opts+=(--header='[s]ession  [w]indow  [c]onfig  [z]oxide   (Esc to cancel)')
+fi
+
+selection=$(picker | fzf "${fzf_opts[@]}") || exit 0
 
 [[ -z "$selection" ]] && exit 0
 
