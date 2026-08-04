@@ -1,71 +1,78 @@
 #!/usr/bin/env bash
-# Combined sesh + tmux-windows fuzzy picker.
+# Combined sesh + tmux-windows fuzzy picker: MRU inbox + curated GROUPS.
 #
-# Window ordering: per-window last-viewed timestamp.
-#   Two tmux hooks (session-window-changed for in-session switches,
-#   client-session-changed for cross-session attaches) append
-#   "@window_id:epoch" to ~/.cache/tmux-mru.log. The picker also bootstraps
-#   itself by logging the current active+attached window on every
-#   invocation — opening the picker implies "I just saw whatever was on
-#   screen," and this closes the gap where the active window of the
-#   attached session has no logged switch yet.
-#   The picker reads the log, dedupes by window_id (latest wins), and
-#   orders windows most-recently-viewed first.
+# Merge of the original MRU picker (this repo) and the snug-agents group
+# picker. Ordering model:
+#   - Rows in a NAMED group keep persistent manual order (⌥↑/⌥↓, `order` file).
+#   - Ungrouped rows are an automatic recency stream: windows sort by
+#     last-VIEWED (MRU log), then sesh sessions/configs/zoxide dirs.
+#     ⌥↑/⌥↓ is a deliberate no-op there — manual moves would be silently
+#     overridden by the next MRU update.
 #
-# Windows with NO MRU entry display "-" in the time column (an honest "we
-# don't know"). They sort by session_last_attached so they cluster by
-# session at the far end of the list. We deliberately do NOT show a fake
-# time for unvisited windows: window_activity lies for Claude-streaming
-# panes ("now" even though you haven't looked) and sla lies for
-# recently-attached sessions ("now" for all 22 windows even though you
-# only viewed one).
+# ── MRU ordering (Ungrouped windows) ──────────────────────────────────────
+#   Two tmux hooks (session-window-changed, client-session-changed) append
+#   "@window_id:epoch" to ~/.cache/tmux-mru.log; opening the picker also logs
+#   the current window ("I just saw this"). Windows with no MRU entry show "-"
+#   in the time column (an honest "we don't know") and sort by
+#   session_last_attached below the MRU-backed rows. We deliberately do NOT
+#   fake a time: window_activity lies for Claude-streaming panes and sla lies
+#   for freshly-attached sessions.
 #
-# Marker column (left edge):
-#   *  = currently attached + active window (you are here)
-#   !  = pending decision needed (Claude waiting, [y/N] prompt, git conflict)
-#   ' ' = busy, idle, or just at a bare shell prompt
+# ── Row model ─────────────────────────────────────────────────────────────
+#   Each row is "KEY<TAB>DISPLAY"; fzf shows/searches only DISPLAY
+#   (--with-nth=2..). Windows are keyed by stable #{window_id} (w:@7) so
+#   grouping/order survive `renumber-windows on`. Sessions/configs/zoxide are
+#   keyed s:/c:/z: by name. A tmux server restart / resurrect restore churns
+#   every window_id; each run snapshots w:@id → session::window_name to
+#   $SIG_FILE and the resurrect post-restore hook drops $RESTORE_FLAG, so the
+#   next run rematches ids by signature (see sync_window_ids).
 #
-# "Waiting" detection cascade (per pane). Bare shell prompts are NOT marked
-# "!" — only real pending decisions earn it.
-#   1. Known TUI in pane_current_command (vim/less/htop/ssh/...) -> not waiting
-#   2. Shell as foreground process (zsh/bash/fish/sh): capture last 5 lines,
-#      mark "!" only on explicit question markers ([y/N], trailing ?, git
-#      conflict markers). Bare prompts stay blank.
-#   3. Other foreground (notably `node` = Claude Code): capture last 5 lines,
-#      mark "!" on Claude's input-box chars or question markers.
-#   pane_current_command is the tty's foreground process group (tcgetpgrp +
-#   proc_pidinfo on darwin); when the shell forks a child, current_command
-#   becomes the child's name. Shell-as-current_command reliably means "at
-#   prompt" — but a prompt alone isn't a pending decision.
+# ── Display ───────────────────────────────────────────────────────────────
+#   <marker> [w] <session:idx padded>  <time right-aligned>  <name>
+#   <2 sp>   [s] <name>                                      (sesh rows)
+#   marker:  *  currently attached + active window (you are here)
+#            !  pending decision (Claude waiting, [y/N] prompt, git conflict)
+#   Claude rows (pane_title starts with ✳/✢/spinner) are tinted by a
+#   deterministic hash of session:idx. Compact mode (<70 cols, e.g. the F2
+#   mobile popup) shrinks padding and fzf chrome.
 #
-# Layout: <marker> [w] <session:idx padded>  <time-ago right-aligned>  <name>
-#         <2 sp>   [s] <name>                                          (sesh rows)
-# Dispatcher strips the 2-char marker+space before parsing [w]/[s]/[c]/[z].
+# ── Keymap (also shown in the picker header) ──────────────────────────────
+#   ⌥↑ / ⌥↓    reorder highlighted row within its NAMED group (no-op in Ungrouped)
+#   ⌥← / ⌥→    jump cursor to previous / next group
+#   ctrl-g     move highlighted row → pick a group (or make a new one)
+#              (ctrl-g, not bare g — a printable key would be stolen from
+#              the search query, making e.g. "general" untypeable)
+#   ctrl-a     add group · ctrl-r rename group · ctrl-x delete group
+#   ⇧↑ / ⇧↓    reorder the whole group under the cursor
+#   enter      activate row   ·   esc  cancel
 #
-# fzf uses --tiebreak=index: exact matches bubble to the cursor on query,
-# empty-query view preserves recency order.
-
+# State lives in $STATE_DIR (order/groups/membership/idsig); wipe to reset.
+# Offline test hooks: PICKER_ROWS_FILE (rows), PICKER_TEST_LIVE (window sigs).
 set -euo pipefail
 export PATH="$HOME/.fzf/bin:$HOME/.bin:/opt/homebrew/bin:$PATH"
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/sesh-combined-picker"
+ORDER_FILE="$STATE_DIR/order"
+GROUPS_FILE="$STATE_DIR/groups"
+MEMBER_FILE="$STATE_DIR/membership"
+SIG_FILE="$STATE_DIR/idsig"
+RESTORE_FLAG="$STATE_DIR/.restore-pending"
+SELF="$0"
+TAB=$'\t'
 
 MRU_LOG="$HOME/.cache/tmux-mru.log"
 MRU_CAP=100
 
 # Compact mode for narrow clients (phone portrait ≈ 48 cols): the normal row
-# format spends 35 fixed columns before the window name starts, which pushes
-# names off-screen on mobile. Compact shrinks padding, drops the " ago"
-# suffix, and trims fzf chrome. Threshold 70 keeps desktop untouched.
+# format spends 35 fixed columns before the window name starts. Threshold 70
+# keeps desktop untouched.
 CLIENT_WIDTH=$(tmux display-message -p '#{client_width}' 2>/dev/null || echo 999)
 COMPACT=0
 (( CLIENT_WIDTH < 70 )) && COMPACT=1 || true
 
 # Map a string to a deterministic 256-colour cube cell, clamped to channels
-# 2..5 so we avoid the near-black quadrant of the cube (the first non-black
-# shade is only ~37% intensity — naive `hash % 216` over-samples unreadable
-# cells). 4*4*4 = 64 readable colours, ample for ~30 windows.
-# Used to tint Claude session names so each session is visually distinct in
-# the picker. Claude Code itself doesn't expose a per-session colour we can
-# read — this is a self-assigned hash-of-pane_title approximation.
+# 2..5 so we avoid the near-black quadrant of the cube (naive `hash % 216`
+# over-samples unreadable cells). 64 readable colours, ample for ~30 windows.
 colour_for() {
   local hash r g b
   hash=$(printf '%s' "$1" | cksum | awk '{print $1}')
@@ -75,9 +82,8 @@ colour_for() {
   printf '%d' $(( 16 + 36*r + 6*g + b ))
 }
 
-# Dedupe MRU log (latest epoch per window_id wins, chronological order
-# preserved) and cap at MRU_CAP entries. macOS has no `tac`, so awk handles
-# the reverse-traversal.
+# Dedupe MRU log (latest epoch per window_id wins) and cap at MRU_CAP entries.
+# macOS has no `tac`, so awk handles the reverse-traversal.
 trim_mru() {
   [[ -f "$MRU_LOG" ]] || return 0
   local tmp
@@ -94,27 +100,82 @@ trim_mru() {
     || rm -f "$tmp"
 }
 
-picker() {
+ensure_state() {
+  mkdir -p "$STATE_DIR"
+  [ -f "$ORDER_FILE" ]  || : > "$ORDER_FILE"
+  [ -f "$GROUPS_FILE" ] || : > "$GROUPS_FILE"
+  [ -f "$MEMBER_FILE" ] || : > "$MEMBER_FILE"
+  sync_window_ids
+}
+
+# Live windows as "w:@id<TAB>session::window_name". The signature survives a
+# resurrect restore (name + session are restored); the window_id does not.
+live_window_sigs() {
+  if [ -n "${PICKER_TEST_LIVE:-}" ]; then cat "$PICKER_TEST_LIVE"; return; fi
+  tmux list-windows -a -F "w:#{window_id}${TAB}#{session_name}::#{window_name}" 2>/dev/null || true
+}
+
+# Bridge the one fragile point in window keying: a tmux server restart /
+# resurrect restore reassigns every #{window_id}, orphaning membership + order.
+# Snapshot w:@id→signature each run. Remap only when the resurrect post-restore
+# hook has dropped $RESTORE_FLAG — a deterministic restore signal — then consume
+# it. Ordinary window-close churn carries no flag, so stale keys are left to
+# drop to Ungrouped untouched.
+sync_window_ids() {
+  local live; live="$(live_window_sigs)"
+  [ -n "$live" ] || return 0
+  if [ -f "$RESTORE_FLAG" ]; then
+    [ -s "$SIG_FILE" ] && remap_window_keys "$live"
+    rm -f "$RESTORE_FLAG"
+  fi
+  printf '%s\n' "$live" > "$SIG_FILE"
+}
+
+# Pure file transform, run only on a confirmed resurrect restore (gated by
+# $RESTORE_FLAG in sync_window_ids). Given live "w:@id<TAB>sig" lines ($1) and
+# the pre-restore snapshot in $SIG_FILE, rewrite MEMBER_FILE + ORDER_FILE so
+# each window key is remapped from its old id to the live id sharing its
+# signature.
+remap_window_keys() {
+  local live="$1"
+  local stored
+  stored="$( { cut -f1 "$MEMBER_FILE"; cat "$ORDER_FILE"; } 2>/dev/null | grep '^w:@' | sort -u || true )"
+  [ -n "$stored" ] || return 0
+
+  # old id → new id, matched by signature (duplicate sigs consumed in order).
+  local map
+  map="$(awk -F'\t' '
+    NR==FNR{ if($0=="")next; c[$2]++; id[$2,c[$2]]=$1; next }
+    { if($0=="")next; u[$2]++; nid=id[$2,u[$2]]; if(nid!="" && $1!=nid) print $1"\t"nid }
+  ' <(printf '%s\n' "$live") "$SIG_FILE")"
+  [ -n "$map" ] || return 0
+
+  local mtmp="$MEMBER_FILE.tmp.$$" otmp="$ORDER_FILE.tmp.$$"
+  awk -F'\t' -v OFS='\t' 'NR==FNR{m[$1]=$2;next}{ if($1 in m)$1=m[$1]; print }' \
+    <(printf '%s\n' "$map") "$MEMBER_FILE" > "$mtmp" && mv "$mtmp" "$MEMBER_FILE"
+  awk 'NR==FNR{split($0,a,"\t");m[a[1]]=a[2];next}{ print ($0 in m)?m[$0]:$0 }' \
+    <(printf '%s\n' "$map") "$ORDER_FILE" > "$otmp" && mv "$otmp" "$ORDER_FILE"
+}
+
+# --- raw row generation -------------------------------------------------------
+# Emits "KEY<TAB>DISPLAY" per row, windows first in MRU order (that emission
+# order IS the Ungrouped sort — see resolve()). For tests / standalone use,
+# PICKER_ROWS_FILE overrides the live query.
+gen_rows() {
+  if [ -n "${PICKER_ROWS_FILE:-}" ]; then cat "$PICKER_ROWS_FILE"; return; fi
+
   local now
   now=$(date +%s)
 
-  # Bootstrap: opening the picker means "I was just looking at the current
-  # window." Log it so the active+attached window always has a truthful
-  # entry, even if no switch event has fired since the hooks were loaded.
-  local current_wid
-  current_wid=$(tmux display-message -p '#{window_id}' 2>/dev/null || true)
-  if [[ -n "$current_wid" ]]; then
-    mkdir -p "$(dirname "$MRU_LOG")"
-    echo "${current_wid}:${now}" >> "$MRU_LOG"
-  fi
-
-  trim_mru
-
-  # Stage 1 (awk): join MRU log into the window list, compute sort key and
-  # "X ago" label. Emit one pipe-separated record per window:
-  #   <sort_key>|<pane_id>|<cmd>|<active>|<attached>|<sess:idx>|<ago>|<name>
+  # Stage 1 (awk): join MRU log into the window list, compute sort tier and
+  # "X ago" label.
+  #   tier 1 = MRU entry exists (truthful timestamp)
+  #   tier 0 = no MRU entry (display "-", sort by session_last_attached)
+  # Tier-first sort keeps MRU-backed rows above unvisited rows even when both
+  # timestamps are recent. Output is TAB-separated with name LAST so names
+  # containing '|' survive (read merges trailing fields into the final var).
   tmux list-windows -a -F \
-    '#{window_id}|#{session_last_attached}|#{window_activity}|#{session_name}|#{window_index}|#{pane_id}|#{pane_current_command}|#{?window_active,1,0}|#{?session_attached,1,0}|#{?#{==:#{pane_title},#H},#{window_name},#{pane_title}}' \
+    '#{window_id}|#{session_last_attached}|#{session_name}|#{window_index}|#{pane_id}|#{pane_current_command}|#{?window_active,1,0}|#{?session_attached,1,0}|#{?#{==:#{pane_title},#H},#{window_name},#{pane_title}}' \
     2>/dev/null \
   | awk -F'|' -v now="$now" -v mrulog="$MRU_LOG" -v compact="$COMPACT" '
       BEGIN {
@@ -133,31 +194,19 @@ picker() {
         return                int(d / 86400) "d" suffix
       }
       {
-        wid=$1; sla=$2; sess=$4; idx=$5; pane=$6; cmd=$7;
-        active=$8; attached=$9; name=$10
-        # Tier-first sort: MRU-backed rows always cluster below unvisited
-        # rows in fzf default layout, regardless of timestamp values.
-        # Without this, MRU and SLA timestamps can interleave when both are
-        # recent (e.g. snugco:21 with stale MRU vs unvisited snugco windows
-        # whose SLA was bumped seconds ago when you re-attached).
-        #   tier 1 = MRU entry exists (truthful timestamp)
-        #   tier 0 = no MRU entry (display "-", sort by SLA within tier)
-        if (wid in mru) {
-          tier = 1
-          ts   = mru[wid]
-          disp = ago(mru[wid])
-        } else {
-          tier = 0
-          ts   = sla
-          disp = "-"
-        }
-        printf "%s|%s|%s|%s|%s|%s|%s:%s|%s|%s\n", \
-          tier, ts, pane, cmd, active, attached, sess, idx, disp, name
+        wid=$1; sla=$2; sess=$3; idx=$4; pane=$5; cmd=$6; active=$7; attached=$8
+        name=$9; for (i=10; i<=NF; i++) name = name "|" $i
+        if (wid in mru) { tier = 1; ts = mru[wid]; disp = ago(mru[wid]) }
+        else            { tier = 0; ts = sla;      disp = "-" }
+        printf "%s|%s\t%s\t%s\t%s\t%s\t%s\t%s:%s\t%s\t%s\n", \
+          tier, ts, wid, pane, cmd, active, attached, sess, idx, disp, name
       }
     ' \
   | sort -t'|' -k1,1rn -k2,2rn \
-  | while IFS='|' read -r _ _ pane cmd active attached sess_idx time_ago name; do
-      # Marker: "you are here" wins over "waiting".
+  | cut -d'	' -f2- \
+  | while IFS=$'\t' read -r wid pane cmd active attached sess_idx time_ago name; do
+      # Marker: "you are here" wins over "waiting". Bare shell prompts are NOT
+      # marked "!" — only real pending decisions earn it.
       marker=" "
       if [[ "$active" == "1" && "$attached" == "1" ]]; then
         marker="*"
@@ -185,47 +234,311 @@ picker() {
             ;;
         esac
       fi
-      # Colour Claude sessions so each session is visually distinct.
-      # Claude sets pane_title to "✳ <name>" idle, "<spinner> <name>" while
-      # streaming. Detect via ✳/✢ or braille-block spinner glyphs. Hash on
-      # sess_idx (e.g. "snugco:21") — stable across spinner frames so the
-      # colour doesn'\''t flicker.
+      # Colour Claude sessions so each is visually distinct. Claude sets
+      # pane_title to "✳ <name>" idle, "<spinner> <name>" streaming. Hash on
+      # sess_idx — stable across spinner frames so the colour doesn'\''t flicker.
       if [[ "$name" == [⠀-⣿✳✢]* ]]; then
         coloured_name=$(printf '\033[38;5;%sm%s\033[0m' "$(colour_for "$sess_idx")" "$name")
       else
         coloured_name="$name"
       fi
-      # Compact keeps the "<marker> [w] " prefix intact — the dispatcher's
-      # column-6 offset and first-word target parsing depend on it.
       if (( COMPACT )); then
-        printf '%s [w] %-12s %4s %s\n' "$marker" "$sess_idx" "$time_ago" "$coloured_name"
+        printf 'w:%s\t%s [w] %-12s %4s %s\n' "$wid" "$marker" "$sess_idx" "$time_ago" "$coloured_name"
       else
-        printf '%s [w] %-18s  %7s  %s\n' "$marker" "$sess_idx" "$time_ago" "$coloured_name"
+        printf 'w:%s\t%s [w] %-18s  %7s  %s\n' "$wid" "$marker" "$sess_idx" "$time_ago" "$coloured_name"
       fi
     done
 
-  # Non-window rows: 2-space prefix keeps the [X] tag at column 2 so the
-  # dispatcher's offset math works for every row type.
-  sesh list -i --tmux --hide-attached 2>/dev/null | sed 's/^/  [s] /'
-  sesh list -i -c                      2>/dev/null | sed 's/^/  [c] /'
-  sesh list -i -z                      2>/dev/null | sed 's/^/  [z] /'
+  sesh list -i --tmux --hide-attached 2>/dev/null | tag_rows s || true
+  sesh list -i -c                      2>/dev/null | tag_rows c || true
+  sesh list -i -z                      2>/dev/null | tag_rows z || true
 }
 
-fzf_opts=(--ansi --tiebreak=index --prompt='sesh> ' --header-first)
+# key a stream of names as "<kind>:<ansi-stripped-name><TAB>  [<kind>] <name>"
+# (2-space prefix keeps the [X] tag column-aligned with marker-prefixed rows)
+tag_rows() {
+  awk -v kind="$1" 'BEGIN{esc=sprintf("%c",27)}
+    { d=$0; k=$0; gsub(esc "\\[[0-9;]*m","",k); printf "%s:%s\t  [%s] %s\n", kind, k, kind, d }'
+}
+
+# --- small shell helpers ------------------------------------------------------
+strip_ansi() { printf '%s' "$1" | sed $'s/\x1b\\[[0-9;]*m//g'; }
+keyof()      { printf '%s' "$1" | cut -f1; }                 # field before first TAB
+disp()       { printf '%s' "$1" | cut -s -f2-; }             # DISPLAY (empty if no TAB)
+is_header()  { case "$(strip_ansi "$(disp "$1")")" in '── '*' ──') return 0;; *) return 1;; esac; }
+is_blank()   { [ -z "${1//[[:space:]]/}" ]; }
+header_name(){ strip_ansi "$(disp "$1")" | sed -E 's/^── (.*) ──$/\1/'; }
+print_header(){ printf '\t\033[2m── %s ──\033[0m\n' "$1"; }  # empty KEY so DISPLAY=header
+trim(){ local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
+
+# --- resolve every raw row to "rank<TAB>group<TAB>KEY<TAB>DISPLAY" -------------
+# Grouped rows rank from $ORDER_FILE (manual, ⌥↑/⌥↓-adjustable). Ungrouped rows
+# rank by generation order — gen_rows emits windows MRU-sorted, so Ungrouped IS
+# the recency stream. $ORDER_FILE is still seeded with never-seen keys so a row
+# gets a sane in-group position the moment it joins a group.
+resolve() {
+  gen_rows | awk -F'\t' -v of="$ORDER_FILE" -v mf="$MEMBER_FILE" -v gf="$GROUPS_FILE" '
+    BEGIN{
+      n=0
+      while((getline kl < of) > 0) if(kl!="" && !(kl in rank)){ rank[kl]=n; n++ }
+      close(of); maxn=n
+      while((getline gl < gf) > 0) if(gl!="") gseen[gl]=1
+      close(gf)
+      while((getline ml < mf) > 0){ i=index(ml,"\t"); if(i>0) mem[substr(ml,1,i-1)]=substr(ml,i+1) }
+      close(mf)
+    }
+    { k=$1
+      if(!(k in rank)){ rank[k]=maxn; newk[maxn]=k; maxn++ }
+      g=(k in mem)?mem[k]:"Ungrouped"
+      if(g!="Ungrouped" && !(g in gseen)) g="Ungrouped"   # stale membership → Ungrouped
+      r=(g=="Ungrouped")?FNR:rank[k]
+      printf "%d\t%s\t%s\n", r, g, $0 }
+    END{ for(i=n;i<maxn;i++) print newk[i] >> of; close(of) }
+  '
+}
+
+# --- render rows grouped, in persisted order ----------------------------------
+render() {
+  ensure_state
+  local resolved; resolved="$(resolve)"
+
+  local -a gorder=()
+  while IFS= read -r g; do [ -n "$g" ] && gorder+=("$g"); done < "$GROUPS_FILE"
+  local ng=${#gorder[@]}
+
+  local ung
+  ung="$(printf '%s\n' "$resolved" | awk -F'\t' '$2=="Ungrouped"' | sort -s -n -k1,1 | cut -f3-)"
+
+  if [ "$ng" -eq 0 ]; then
+    # No groups yet → flat MRU list, no header (identical to the old picker).
+    [ -n "$ung" ] && printf '%s\n' "$ung"
+    return
+  fi
+
+  local g rows first=1
+  for g in "${gorder[@]}"; do
+    [ "$first" -eq 1 ] || echo
+    first=0
+    print_header "$g"
+    rows="$(printf '%s\n' "$resolved" | awk -F'\t' -v g="$g" '$2==g' | sort -s -n -k1,1 | cut -f3-)"
+    [ -n "$rows" ] && printf '%s\n' "$rows"
+  done
+  # Ungrouped last — only when it actually holds rows.
+  if [ -n "$ung" ]; then
+    echo
+    print_header "Ungrouped"
+    printf '%s\n' "$ung"
+  fi
+}
+
+# --- swap two keys' slots in $ORDER_FILE --------------------------------------
+swap_order() {
+  local ka="$1" kb="$2" tmp="$ORDER_FILE.tmp.$$"
+  awk -v ka="$ka" -v kb="$kb" '{ if($0==ka) print kb; else if($0==kb) print ka; else print }' \
+    "$ORDER_FILE" > "$tmp" && mv "$tmp" "$ORDER_FILE"
+}
+
+# --- reorder highlighted row within its NAMED group ----------------------------
+# Neighbour is the adjacent rendered row; a header/blank there means a group
+# edge → no-op. Ungrouped rows are MRU-sorted, so manual reorder there is a
+# deliberate no-op (cursor held) — the next MRU update would override it anyway.
+move() {
+  local dir="$1" hl="$2"
+  local rendered; rendered="$(render)"
+  local -a KEY=() REAL=()
+  local i=0
+  while IFS= read -r ln; do
+    if is_header "$ln" || is_blank "$ln"; then REAL[i]=0; KEY[i]=""
+    else REAL[i]=1; KEY[i]="$(keyof "$ln")"; fi
+    i=$((i+1))
+  done <<< "$rendered"
+  local n=$i hlkey; hlkey="$(keyof "$hl")"
+
+  local mi=-1 j
+  for ((j=0;j<n;j++)); do [ "${REAL[j]}" = 1 ] && [ "${KEY[j]}" = "$hlkey" ] && { mi=$j; break; }; done
+  [ "$mi" -lt 0 ] && { printf 'reload-sync(%s --render)\n' "$SELF"; return; }
+
+  local grp; grp="$(group_under "$mi")"
+  if [ -z "$grp" ] || [ "$grp" = Ungrouped ]; then
+    printf 'reload-sync(%s --render)+pos(%d)\n' "$SELF" $((mi+1)); return
+  fi
+
+  local ni; [ "$dir" = up ] && ni=$((mi-1)) || ni=$((mi+1))
+  if [ "$ni" -lt 0 ] || [ "$ni" -ge "$n" ] || [ "${REAL[$ni]}" != 1 ]; then
+    printf 'reload-sync(%s --render)+pos(%d)\n' "$SELF" $((mi+1)); return   # edge: hold cursor
+  fi
+  swap_order "$hlkey" "${KEY[$ni]}"
+  printf 'reload-sync(%s --render)+pos(%d)\n' "$SELF" $((ni+1))
+}
+
+# --- name of the group owning 0-based row IDX ---------------------------------
+group_under() {
+  local idx="$1" rendered; rendered="$(render)"
+  local i=0 cur=""
+  while IFS= read -r ln; do
+    is_header "$ln" && cur="$(header_name "$ln")"
+    [ "$i" = "$idx" ] && { printf '%s' "$cur"; return; }
+    i=$((i+1))
+  done <<< "$rendered"
+}
+
+# --- group-list mutations -----------------------------------------------------
+add_group_name() {          # append a group if new and not the reserved name
+  local name; name="$(trim "$1")"
+  { [ -z "$name" ] || [ "$name" = Ungrouped ]; } && return 0
+  grep -qxF "$name" "$GROUPS_FILE" 2>/dev/null && return 0
+  printf '%s\n' "$name" >> "$GROUPS_FILE"
+}
+
+set_membership() {          # KEY GROUP  (GROUP=Ungrouped just clears it)
+  local key="$1" grp="$2" tmp="$MEMBER_FILE.tmp.$$"
+  awk -F'\t' -v k="$key" '$1!=k' "$MEMBER_FILE" > "$tmp" && mv "$tmp" "$MEMBER_FILE"
+  [ "$grp" != Ungrouped ] && printf '%s\t%s\n' "$key" "$grp" >> "$MEMBER_FILE"
+  return 0
+}
+
+read_tty() {                # prompt on the terminal, echo the trimmed reply
+  local reply; printf '%s' "$1" > /dev/tty
+  IFS= read -r reply < /dev/tty || return 1
+  trim "$reply"
+}
+
+move_to_group() {
+  local hl="$1"
+  { is_header "$hl" || is_blank "$hl"; } && return 0
+  local key; key="$(keyof "$hl")"
+  local -a gs=(); while IFS= read -r g; do [ -n "$g" ] && gs+=("$g"); done < "$GROUPS_FILE"
+  local choice
+  choice="$( { [ ${#gs[@]} -gt 0 ] && printf '%s\n' "${gs[@]}"; echo Ungrouped; echo '＋ New group…'; } \
+             | fzf --prompt='move to> ' --height=40% --reverse )" || return 0
+  [ -z "$choice" ] && return 0
+  if [ "$choice" = '＋ New group…' ]; then
+    choice="$(read_tty 'New group name: ')" || return 0
+    [ -z "$choice" ] && return 0
+    add_group_name "$choice"
+  fi
+  set_membership "$key" "$choice"
+}
+
+add_group() { local name; name="$(read_tty 'New group name: ')" || return 0; add_group_name "$name"; }
+
+rename_group() {
+  local idx="$1" old; old="$(group_under "$idx")"
+  { [ -z "$old" ] || [ "$old" = Ungrouped ]; } && { printf "Can't rename Ungrouped" > /dev/tty; sleep 0.6; return 0; }
+  local new; new="$(read_tty "Rename \"$old\" to: ")" || return 0
+  { [ -z "$new" ] || [ "$new" = "$old" ] || [ "$new" = Ungrouped ]; } && return 0
+  local t1="$GROUPS_FILE.tmp.$$" t2="$MEMBER_FILE.tmp.$$"
+  awk -v o="$old" -v n="$new" '{ print ($0==o)?n:$0 }' "$GROUPS_FILE" > "$t1" && mv "$t1" "$GROUPS_FILE"
+  awk -F'\t' -v o="$old" -v n="$new" 'BEGIN{OFS="\t"}{ if($2==o)$2=n; print }' "$MEMBER_FILE" > "$t2" && mv "$t2" "$MEMBER_FILE"
+}
+
+delete_group() {
+  local idx="$1" g; g="$(group_under "$idx")"
+  { [ -z "$g" ] || [ "$g" = Ungrouped ]; } && { printf "Can't delete Ungrouped" > /dev/tty; sleep 0.6; return 0; }
+  local t1="$GROUPS_FILE.tmp.$$" t2="$MEMBER_FILE.tmp.$$"
+  grep -vxF "$g" "$GROUPS_FILE" > "$t1" 2>/dev/null || : ; mv "$t1" "$GROUPS_FILE"
+  awk -F'\t' -v g="$g" '$2!=g' "$MEMBER_FILE" > "$t2" && mv "$t2" "$MEMBER_FILE"
+}
+
+# --- reorder a whole group up/down --------------------------------------------
+move_group() {
+  local dir="$1" idx="$2" g; g="$(group_under "$idx")"
+  { [ -z "$g" ] || [ "$g" = Ungrouped ]; } && { printf 'reload-sync(%s --render)\n' "$SELF"; return; }
+  local -a gs=(); while IFS= read -r x; do [ -n "$x" ] && gs+=("$x"); done < "$GROUPS_FILE"
+  local pos=-1 k; for ((k=0;k<${#gs[@]};k++)); do [ "${gs[k]}" = "$g" ] && pos=$k; done
+  local swap; [ "$dir" = up ] && swap=$((pos-1)) || swap=$((pos+1))
+  if [ "$pos" -lt 0 ] || [ "$swap" -lt 0 ] || [ "$swap" -ge "${#gs[@]}" ]; then
+    printf 'reload-sync(%s --render)\n' "$SELF"; return
+  fi
+  local t="${gs[pos]}"; gs[pos]="${gs[swap]}"; gs[swap]="$t"
+  printf '%s\n' "${gs[@]}" > "$GROUPS_FILE"
+  # reposition cursor onto the moved group's header in the fresh render
+  local rendered; rendered="$(render)"; local i=0 target=1
+  while IFS= read -r ln; do
+    is_header "$ln" && [ "$(header_name "$ln")" = "$g" ] && { target=$((i+1)); break; }
+    i=$((i+1))
+  done <<< "$rendered"
+  printf 'reload-sync(%s --render)+pos(%d)\n' "$SELF" "$target"
+}
+
+# --- jump cursor to the previous / next group header --------------------------
+jump() {
+  local dir="$1" idx="$2" rendered; rendered="$(render)"
+  local -a H=(); local i=0
+  while IFS= read -r ln; do is_header "$ln" && H+=("$i"); i=$((i+1)); done <<< "$rendered"
+  local nH=${#H[@]}
+  [ "$nH" -eq 0 ] && { printf 'pos(%d)\n' $((idx+1)); return; }
+  local cur=-1 h; for h in "${H[@]}"; do [ "$h" -le "$idx" ] && cur=$h; done
+  local ci=-1 k; for ((k=0;k<nH;k++)); do [ "${H[k]}" = "$cur" ] && ci=$k; done
+  local target
+  if [ "$dir" = next ]; then
+    [ "$ci" -lt $((nH-1)) ] && target=${H[$((ci+1))]} || target=${H[0]}
+  else
+    if [ "$idx" -gt "$cur" ] && [ "$cur" -ge 0 ]; then target=$cur        # from a row: ⌥← snaps to own header
+    elif [ "$ci" -gt 0 ]; then target=${H[$((ci-1))]}
+    else target=${H[$((nH-1))]}; fi
+  fi
+  printf 'pos(%d)\n' $((target+1))
+}
+
+# --- internal subcommands -----------------------------------------------------
+case "${1:-}" in
+  --render)         ensure_state; render; exit 0 ;;
+  --move)           ensure_state; move "${2:-}" "${3:-}"; exit 0 ;;
+  --move-to-group)  ensure_state; move_to_group "${2:-}"; exit 0 ;;
+  --add-group)      ensure_state; add_group; exit 0 ;;
+  --rename-group)   ensure_state; rename_group "${2:-0}"; exit 0 ;;
+  --delete-group)   ensure_state; delete_group "${2:-0}"; exit 0 ;;
+  --move-group)     ensure_state; move_group "${2:-}" "${3:-0}"; exit 0 ;;
+  --jump)           ensure_state; jump "${2:-}" "${3:-0}"; exit 0 ;;
+esac
+
+# --- interactive picker -------------------------------------------------------
+# Bootstrap MRU: opening the picker means "I was just looking at the current
+# window." Done here (not in gen_rows) so reload-sync re-renders don't spam
+# the log.
+current_wid=$(tmux display-message -p '#{window_id}' 2>/dev/null || true)
+if [[ -n "$current_wid" ]]; then
+  mkdir -p "$(dirname "$MRU_LOG")"
+  echo "${current_wid}:$(date +%s)" >> "$MRU_LOG"
+fi
+trim_mru
+
+# --with-nth=2.. hides the KEY column (field 1) from BOTH display and search:
+# since fzf 0.60+ the search scope follows the --with-nth transform. Do NOT also
+# pass --nth=2.. — it is re-applied on top of the already-transformed single-field
+# string, looking for a field 2 that no longer exists, which silently zeroes out
+# every query.
+fzf_opts=(--ansi --no-sort --reverse --delimiter='\t' --with-nth=2.. --prompt='sesh> ' --header-first)
 if (( COMPACT )); then
-  fzf_opts+=(--header='s/w/c/z · Esc' --info=hidden --no-separator)
+  fzf_opts+=(--header=$'⌥↑↓ move · ^g group · ⇧↑↓ grp\ns/w/c/z · Esc' --info=hidden --no-separator)
 else
-  fzf_opts+=(--header='[s]ession  [w]indow  [c]onfig  [z]oxide   (Esc to cancel)')
+  fzf_opts+=(--header=$'[s]ession [w]indow [c]onfig [z]oxide\n⌥↑/⌥↓ move row · ⌥←/⌥→ jump group · ctrl-g→group · ⇧↑/⇧↓ move group\nctrl-a add · ctrl-r rename · ctrl-x delete · enter open · esc cancel')
 fi
 
-selection=$(picker | fzf "${fzf_opts[@]}") || exit 0
+selection=$(
+  render | fzf "${fzf_opts[@]}" \
+    --bind "alt-up:transform($SELF --move up {})" \
+    --bind "alt-down:transform($SELF --move down {})" \
+    --bind "alt-left:transform($SELF --jump prev {n})" \
+    --bind "alt-right:transform($SELF --jump next {n})" \
+    --bind "ctrl-g:execute($SELF --move-to-group {})+reload-sync($SELF --render)" \
+    --bind "ctrl-a:execute($SELF --add-group)+reload-sync($SELF --render)" \
+    --bind "ctrl-r:execute($SELF --rename-group {n})+reload-sync($SELF --render)" \
+    --bind "ctrl-x:execute($SELF --delete-group {n})+reload-sync($SELF --render)" \
+    --bind "shift-up:transform($SELF --move-group up {n})" \
+    --bind "shift-down:transform($SELF --move-group down {n})"
+) || exit 0
 
 [[ -z "$selection" ]] && exit 0
+is_header "$selection" && exit 0
+is_blank "$selection"  && exit 0
 
-# Layout per row: "<marker> [X] <payload>" where marker is 1 char (or space)
-# and [X] starts at column 2. Payload starts at column 6.
-kind="${selection:2:3}"
-rest="${selection:6}"
+# Layout per DISPLAY row: "<marker> [X] <payload>" — marker is 1 char (or the
+# 2-space sesh prefix), [X] starts at column 2, payload at column 6.
+display="$(disp "$selection")"
+kind="${display:2:3}"
+rest="${display:6}"
 
 case "$kind" in
   '[w]')
