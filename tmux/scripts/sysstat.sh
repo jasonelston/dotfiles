@@ -12,11 +12,16 @@
 # btop reports active+wired instead (btop_collect.cpp:1226), which omits
 # compressed and inactive-anonymous pages — ~12 GB apart on a loaded machine.
 #
-# The alert colour leads on kern.memorystatus_vm_pressure_level (the same
-# kernel signal behind Activity Monitor's pressure graph, 1=normal 2=warn
-# 4=critical) because a high used-percentage is normal on macOS: the
-# compressor deliberately keeps memory full rather than idle. The percentage
-# thresholds only escalate a step early.
+# The colour is kern.memorystatus_vm_pressure_level and nothing else
+# (1=normal 2=warn 4=critical, the dispatch_source_memorypressure_flags_t
+# values), so it agrees with Activity Monitor's pressure graph by construction.
+#
+# Deliberately NOT a percentage of RAM. macOS memory pressure is a composite of
+# free RAM, compression ratio, swap usage and allocation-demand rate; the
+# compressor keeps memory full on purpose, so a healthy machine sits high. An
+# earlier revision escalated to yellow at 80% used and was measured firing on a
+# box Activity Monitor showed as green at 86% (28.05/32 GB, swap 3.15 GB). No
+# percentage reproduces the kernel's verdict, so don't reintroduce one.
 
 # Darwin-only: vm_stat, kern.memorystatus_vm_pressure_level and vm.swapusage
 # have no GNU equivalents. Exit silently rather than emit a broken segment —
@@ -26,10 +31,8 @@
 COLOUR_NORMAL="${COLOUR_NORMAL:-#[fg=#6c7086]}"    # catppuccin overlay0
 COLOUR_WARN="${COLOUR_WARN:-#[fg=#f9e2af]}"      # catppuccin yellow
 COLOUR_CRITICAL="${COLOUR_CRITICAL:-#[fg=#f38ba8]}"  # catppuccin red
-PERCENT_WARN="${PERCENT_WARN:-80}"
-PERCENT_CRITICAL="${PERCENT_CRITICAL:-90}"
 
-export COLOUR_NORMAL COLOUR_WARN COLOUR_CRITICAL PERCENT_WARN PERCENT_CRITICAL
+export COLOUR_NORMAL COLOUR_WARN COLOUR_CRITICAL
 
 { sysctl -n hw.ncpu vm.loadavg hw.memsize vm.swapusage \
          kern.memorystatus_vm_pressure_level
@@ -57,9 +60,9 @@ END {
   memory_percent = (anonymous - purgeable + wired + compressed) * 100 / memory_total
 
   PRESSURE_WARN = 2; PRESSURE_CRITICAL = 4
-  if (pressure_level >= PRESSURE_CRITICAL || memory_percent >= ENVIRON["PERCENT_CRITICAL"])
+  if (pressure_level >= PRESSURE_CRITICAL)
     memory_colour = ENVIRON["COLOUR_CRITICAL"]
-  else if (pressure_level >= PRESSURE_WARN || memory_percent >= ENVIRON["PERCENT_WARN"])
+  else if (pressure_level >= PRESSURE_WARN)
     memory_colour = ENVIRON["COLOUR_WARN"]
   else
     memory_colour = ENVIRON["COLOUR_NORMAL"]
