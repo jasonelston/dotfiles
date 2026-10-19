@@ -1,5 +1,6 @@
 #!/bin/sh
-# Compact CPU / memory / swap for the tmux status bar. Output: "C112% M73% S1.0G"
+# Compact CPU / memory / swap / free disk for the tmux status bar.
+# Output: "C112% M73% S1.0G D51G"
 # The memory figure turns yellow under memory pressure and red when critical.
 # Supports macOS and Linux; any other kernel prints nothing.
 #
@@ -27,6 +28,16 @@
 # than leave RAM idle, Linux caches — so a healthy machine sits high. An
 # earlier revision escalated at 80% used and was caught firing on a box
 # Activity Monitor showed as green at 86%. Don't reintroduce a percentage.
+#
+# D is free space on the volume holding $HOME, not `/`. On macOS `/` is the
+# sealed read-only system snapshot (measured 20% used while the data volume
+# sat at 89%), and on Linux /home may be its own partition. df's "Available"
+# excludes purgeable space, so it reads a few GB below Finder's figure.
+#
+# D's colour limits are absolute GB, not a percentage: what fails is a
+# fixed-size write — swap growing, an OS update, a docker pull — and 10% of a
+# 4 TB disk is a 400 GB false alarm. Unlike M's colour they are judgement, not
+# a kernel signal.
 
 COLOUR_NORMAL="${COLOUR_NORMAL:-#[fg=#6c7086]}"      # catppuccin overlay0
 COLOUR_WARN="${COLOUR_WARN:-#[fg=#f9e2af]}"          # catppuccin yellow
@@ -114,12 +125,22 @@ esac
 
 [ -n "$stats" ] || exit 0
 
-printf '%s' "$stats" | awk '{
-  colour = $4 == "critical" ? ENVIRON["COLOUR_CRITICAL"] \
-         : $4 == "warn"     ? ENVIRON["COLOUR_WARN"] : ENVIRON["COLOUR_NORMAL"]
+home_free_bytes=$(df -Pk "$HOME" | awk 'NR == 2 { printf "%.0f", $4 * 1024 }')
+
+printf '%s %s' "$stats" "$home_free_bytes" | awk '
+function colour_for(state) {
+  return state == "critical" ? ENVIRON["COLOUR_CRITICAL"] \
+       : state == "warn"     ? ENVIRON["COLOUR_WARN"] : ENVIRON["COLOUR_NORMAL"]
+}
+{
+  DISK_WARN_GB = 20; DISK_CRITICAL_GB = 10
+  disk_free_gb = $5 / 1073741824
+  disk_state = disk_free_gb < DISK_CRITICAL_GB ? "critical" \
+             : disk_free_gb < DISK_WARN_GB     ? "warn" : "normal"
 
   # Always gigabytes: a fixed-width field keeps the segment from jittering as
   # swap crosses 1 GB, and it is one column narrower than the megabyte form.
-  printf "C%.0f%% %sM%.0f%%%s S%.1fG",
-         $1, colour, $2, ENVIRON["COLOUR_NORMAL"], $3 / 1073741824
+  printf "C%.0f%% %sM%.0f%%%s S%.1fG %sD%.0fG%s",
+         $1, colour_for($4), $2, ENVIRON["COLOUR_NORMAL"], $3 / 1073741824,
+         colour_for(disk_state), disk_free_gb, ENVIRON["COLOUR_NORMAL"]
 }'
