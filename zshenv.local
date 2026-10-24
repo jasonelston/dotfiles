@@ -8,6 +8,10 @@ if [[ ! -o interactive ]]; then
   export PATH="/opt/homebrew/bin:$PATH"
 fi
 
+# mosh-server reads this when `ssh host mosh-server` starts it, and exits after a
+# week with no contact from its client instead of living forever.
+export MOSH_SERVER_NETWORK_TMOUT=604800
+
 # thoughtbot's ~/.zshenv prints a warning to stderr whenever .zshenv.local edits
 # PATH (it expects PATH work in .zshrc.local). That guidance targets the interactive
 # PATH; the entry above is deliberately non-interactive-only. Resync thoughtbot's
