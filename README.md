@@ -76,3 +76,28 @@ tmux sessions, tmux windows (sorted by recent activity), sesh configured
 sessions, and zoxide directories. `laptop.local` symlinks it into `~/.bin/`
 for command-line use; the tmux bindings (`prefix + K`, `Cmd + K`) point at
 the absolute path.
+
+### Daily disk cleanup
+
+`laptop.local` runs `setup-cleanup-disk`, which installs
+`~/dotfiles-local/cleanup-disk-daily` as the launchd agent
+`com.jasonelston.cleanup-disk-daily` (daily at 03:00, or on wake if the Mac
+was asleep). It runs unattended and deletes only what rebuilds itself:
+
+- `node_modules/.cache` under `~/code/github.com`
+- the Go build cache, only when it is over 10 GB
+- brew, npm, yarn and pip caches, and dev-tool caches in `~/Library/Caches`
+- Chrome, Arc and Dia caches, only when that browser is closed
+- temp files and `~/Library/Logs` files older than 7 days
+- Docker build cache, dangling images, and containers stopped over 7 days
+- `mosh-server` processes with no client input for 7 days (the tmux session stays)
+
+It never touches worktrees, Docker volumes, Claude sessions or Playwright
+browsers. It reports them instead, at the end of
+`~/Library/Logs/cleanup-disk/<date>.log`. Act on the report with `/cleanup-disk`.
+
+    CLEANUP_DISK_DRY_RUN=1 ~/dotfiles-local/cleanup-disk-daily   # preview
+    sh ~/dotfiles-local/setup-cleanup-disk --uninstall           # remove
+
+`zshenv.local` also sets `MOSH_SERVER_NETWORK_TMOUT`, so new `mosh-server`
+processes exit by themselves after a week with no contact from their client.
