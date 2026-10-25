@@ -1,0 +1,79 @@
+#!/bin/sh
+# setup-cleanup-disk - install cleanup-disk-daily as a launchd agent (daily, 03:00).
+#
+# Run from laptop.local (via `sysup`), or standalone. Idempotent: the agent is
+# reloaded only when its plist changes. A Mac asleep at 03:00 runs it on wake.
+#
+#   setup-cleanup-disk               install or refresh
+#   setup-cleanup-disk --uninstall   unload and remove the agent
+
+set -u
+
+fancy_echo() { printf "\n%s\n" "$*"; }
+
+DOTFILES_LOCAL="${DOTFILES_LOCAL:-$HOME/dotfiles-local}"
+LABEL="com.jasonelston.cleanup-disk-daily"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+LOG_DIR="$HOME/Library/Logs/cleanup-disk"
+DOMAIN="gui/$(id -u)"
+
+render_plist() {
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$DOTFILES_LOCAL/cleanup-disk-daily</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>$LOG_DIR/launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>$LOG_DIR/launchd.log</string>
+</dict>
+</plist>
+EOF
+}
+
+is_loaded() { launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; }
+
+install_agent() {
+  mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
+  rendered=$(render_plist)
+  if is_loaded && [ -f "$PLIST" ] && [ "$rendered" = "$(cat "$PLIST")" ]; then
+    fancy_echo "Daily disk cleanup already installed: $PLIST (skipping)."
+    return 0
+  fi
+  printf '%s\n' "$rendered" > "$PLIST"
+  is_loaded && launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null
+  launchctl bootstrap "$DOMAIN" "$PLIST"
+  fancy_echo "Daily disk cleanup installed: runs at 03:00, logs to $LOG_DIR/."
+}
+
+uninstall_agent() {
+  is_loaded && launchctl bootout "$DOMAIN/$LABEL"
+  rm -f "$PLIST"
+  fancy_echo "Daily disk cleanup removed. Logs kept in $LOG_DIR/."
+}
+
+case "${1:-}" in
+  --uninstall) uninstall_agent ;;
+  *) install_agent ;;
+esac

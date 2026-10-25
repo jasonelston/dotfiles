@@ -78,3 +78,8 @@ fancy_echo "Installing tmux plugins via TPM ..."
 # + mosh status, Remote Login, no-idle-sleep on AC, keys-only sshd. Idempotent.
 fancy_echo "Configuring remote access ..."
 sh "$HOME/dotfiles-local/setup-remote-access"
+
+# Daily unattended cleanup of rebuildable caches, stale temp files and idle
+# mosh-servers (launchd agent, 03:00). Idempotent.
+fancy_echo "Configuring daily disk cleanup ..."
+sh "$HOME/dotfiles-local/setup-cleanup-disk"

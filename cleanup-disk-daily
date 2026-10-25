@@ -1,0 +1,247 @@
+#!/bin/bash
+# cleanup-disk-daily - unattended daily disk and process cleanup for this Mac.
+#
+# Installed as a launchd agent by setup-cleanup-disk (run from laptop.local).
+# It deletes only what rebuilds itself. Anything that can hold work - worktrees,
+# Docker volumes, Claude sessions - is reported, never touched: act on the report
+# with the interactive /cleanup-disk command.
+#
+#   CLEANUP_DISK_DRY_RUN=1   log what would be deleted, delete nothing
+
+set -u
+
+# launchd starts agents with PATH=/usr/bin:/bin:/usr/sbin:/sbin only.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.asdf/shims:/usr/bin:/bin:/usr/sbin:/sbin"
+
+LOG_DIR="$HOME/Library/Logs/cleanup-disk"
+CODE_ROOT="$HOME/code/github.com"
+CLAUDE_TMP="/private/tmp/claude-$(id -u)"
+# Clearing the Go cache every day would make every first build cold. Go trims
+# entries unused for 5 days itself, so only clear it when that is not keeping up.
+GO_CACHE_LIMIT_KB=$((10 * 1024 * 1024))
+STALE_DAYS=7
+LOG_RETENTION_DAYS=30
+TERMINALS="tmux|iTerm2|Terminal|Ghostty|kitty|alacritty|wezterm|Warp|Hyper|screen"
+DRY_RUN="${CLEANUP_DISK_DRY_RUN:-0}"
+
+freed_kb=0
+report_lines=""
+
+log() { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*"; }
+
+report() {
+  log "REPORT $*"
+  report_lines="$report_lines
+  - $*"
+}
+
+size_kb() { du -sk "$@" 2>/dev/null | awk '{ total += $1 } END { print total + 0 }'; }
+
+as_gb() { awk -v kb="$1" 'BEGIN { printf "%.2f GB", kb / 1048576 }'; }
+
+is_dry_run() { [ "$DRY_RUN" = "1" ]; }
+
+remove_paths() {
+  for path in "$@"; do
+    [ -e "$path" ] || continue
+    path_kb=$(size_kb "$path")
+    log "remove $(as_gb "$path_kb") $path"
+    freed_kb=$((freed_kb + path_kb))
+    is_dry_run || rm -rf "$path"
+  done
+}
+
+remove_files_older_than() {
+  root=$1 days=$2
+  [ -d "$root" ] || return 0
+  old_kb=$(find "$root" -type f -mtime +"$days" -not -path "$LOG_DIR/*" -print0 2>/dev/null \
+    | xargs -0 du -sk 2>/dev/null | awk '{ total += $1 } END { print total + 0 }')
+  log "remove $(as_gb "$old_kb") of files older than ${days}d in $root"
+  freed_kb=$((freed_kb + old_kb))
+  is_dry_run && return 0
+  find "$root" -type f -mtime +"$days" -not -path "$LOG_DIR/*" -delete 2>/dev/null
+  # An empty directory can be a live session's fresh scratchpad, so age gates it too.
+  find "$root" -mindepth 1 -type d -empty -mtime +"$days" -delete 2>/dev/null
+}
+
+clean_with_tool() {
+  cache_dir=$1; shift
+  before_kb=$(size_kb "$cache_dir")
+  if is_dry_run; then
+    log "would run '$*' (cache now $(as_gb "$before_kb"))"
+    return 0
+  fi
+  "$@" >/dev/null 2>&1
+  after_kb=$(size_kb "$cache_dir")
+  log "ran '$*' freed $(as_gb $((before_kb - after_kb)))"
+  freed_kb=$((freed_kb + before_kb - after_kb))
+}
+
+clean_go_build_cache() {
+  command -v go >/dev/null || return 0
+  cache=$(go env GOCACHE 2>/dev/null)
+  [ -d "$cache" ] || return 0
+  cache_kb=$(size_kb "$cache")
+  if [ "$cache_kb" -lt "$GO_CACHE_LIMIT_KB" ]; then
+    log "keep go build cache $(as_gb "$cache_kb"), under the limit"
+    return 0
+  fi
+  clean_with_tool "$cache" go clean -cache
+}
+
+clean_node_module_caches() {
+  while IFS= read -r cache; do
+    remove_paths "$cache"
+  done < <(find "$CODE_ROOT" -maxdepth 5 -type d -name .cache -path '*/node_modules/*' -prune 2>/dev/null)
+}
+
+clean_package_manager_caches() {
+  command -v brew >/dev/null && clean_with_tool "$(brew --cache)" brew cleanup --prune=all
+  command -v npm >/dev/null && clean_with_tool "$HOME/.npm/_cacache" npm cache clean --force
+  command -v yarn >/dev/null && clean_with_tool "$(yarn cache dir 2>/dev/null)" yarn cache clean
+  command -v pip3 >/dev/null && clean_with_tool "$(pip3 cache dir 2>/dev/null)" pip3 cache purge
+}
+
+clean_dev_tool_caches() {
+  caches="$HOME/Library/Caches"
+  remove_paths "$caches/golangci-lint" "$caches/gopls" "$caches/goimports" \
+    "$caches/staticcheck" "$caches/node-gyp" "$caches/CocoaPods" \
+    "$caches/com.microsoft.VSCode" \
+    "$caches/com.todesktop.230313mzl4w4u92" "$caches/com.todesktop.230313mzl4w4u92.ShipIt"
+}
+
+# ms-playwright is not here on purpose: it holds browser binaries, not a cache,
+# and deleting it breaks any Playwright run in flight.
+clean_browser_cache_if_closed() {
+  app=$1 cache=$2
+  if pgrep -xq "$app"; then
+    log "keep $cache, $app is running"
+    return 0
+  fi
+  remove_paths "$cache"
+}
+
+clean_browser_caches() {
+  clean_browser_cache_if_closed "Google Chrome" "$HOME/Library/Caches/Google/Chrome"
+  clean_browser_cache_if_closed "Arc" "$HOME/Library/Caches/Arc"
+  clean_browser_cache_if_closed "Dia" "$HOME/Library/Caches/Dia"
+}
+
+clean_stale_temp_files() {
+  while IFS= read -r build_dir; do
+    remove_paths "$build_dir"
+  done < <(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'go-build*' -mtime +1 2>/dev/null)
+  remove_files_older_than "$CLAUDE_TMP" "$STALE_DAYS"
+  remove_files_older_than /tmp/claude-noisy "$STALE_DAYS"
+  remove_files_older_than "$HOME/Library/Logs" "$STALE_DAYS"
+}
+
+# Docker frees space inside its VM, not on the host: Docker.raw only shrinks
+# when its disk limit is lowered in Docker Desktop. So none of it is counted.
+prune_docker() {
+  if ! command -v docker >/dev/null || ! docker info >/dev/null 2>&1; then
+    log "skip docker, daemon not running"
+    return 0
+  fi
+  if is_dry_run; then
+    log "would prune docker build cache, dangling images, containers stopped over ${STALE_DAYS}d"
+  else
+    for prune in "builder prune -af" "image prune -f" \
+      "container prune -f --filter until=$((STALE_DAYS * 24))h" \
+      "network prune -f --filter until=$((STALE_DAYS * 24))h"; do
+      # shellcheck disable=SC2086 # each entry is a docker subcommand split into its words on purpose
+      log "docker $prune: $(docker $prune 2>&1 | grep -i 'reclaimed' || echo 'nothing reclaimed')"
+    done
+  fi
+  volumes=$(docker system df --format '{{.Type}} {{.Reclaimable}}' 2>/dev/null | awk '/Volumes/ { print $3 }')
+  [ -n "$volumes" ] && [ "$volumes" != "0B" ] && report "docker volumes reclaimable: $volumes (docker volume prune)"
+}
+
+shell_runs_only_tmux_clients() {
+  for child in $(pgrep -P "$1"); do
+    [ "$(ps -o comm= -p "$child")" = "tmux" ] || return 1
+  done
+}
+
+# mosh-server outlives its client by design, so a dropped phone or laptop leaves
+# one behind forever. The pty's atime moves only when the client sends input,
+# which separates a live session from a dead one where uptime and RAM cannot.
+reap_idle_mosh_servers() {
+  now=$(date +%s)
+  for server in $(pgrep -x mosh-server); do
+    shell=$(pgrep -P "$server" | head -1)
+    [ -n "$shell" ] || continue
+    tty=$(ps -o tty= -p "$shell" | tr -d ' ')
+    last_input=$(stat -f %a "/dev/$tty" 2>/dev/null) || continue
+    idle_days=$(((now - last_input) / 86400))
+    [ "$idle_days" -ge "$STALE_DAYS" ] || continue
+    if ! shell_runs_only_tmux_clients "$shell"; then
+      report "mosh-server $server idle ${idle_days}d but its shell runs more than tmux: kept"
+      continue
+    fi
+    log "kill mosh-server $server, no input for ${idle_days}d (its tmux session stays)"
+    is_dry_run || kill "$server"
+  done
+}
+
+is_attached_to_terminal() {
+  current=$1
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    parent=$(ps -o ppid= -p "$current" 2>/dev/null | tr -d ' ')
+    [ -n "$parent" ] && [ "$parent" != "0" ] && [ "$parent" != "1" ] || return 1
+    ps -o comm= -p "$parent" 2>/dev/null | sed 's|.*/||' | grep -qE "^($TERMINALS)$" && return 0
+    current=$parent
+  done
+  return 1
+}
+
+report_orphaned_claude_sessions() {
+  for pid in $(pgrep -x claude); do
+    is_attached_to_terminal "$pid" || report "claude PID $pid is not attached to a terminal"
+  done
+}
+
+report_merged_worktrees() {
+  if ! command -v gh >/dev/null || ! gh auth status >/dev/null 2>&1; then
+    log "skip worktree report, gh is not logged in"
+    return 0
+  fi
+  for worktree in "$CODE_ROOT"/*/*-worktrees/*/; do
+    [ -e "$worktree/.git" ] || continue
+    branch=$(git -C "$worktree" branch --show-current 2>/dev/null)
+    [ -n "$branch" ] || continue
+    pr_states=$(cd "$worktree" && gh pr list --head "$branch" --state all --json state --jq '.[].state' 2>/dev/null)
+    case "$pr_states" in
+      *OPEN*) ;;
+      *MERGED*) report "worktree merged, no open PR: $worktree" ;;
+    esac
+  done
+}
+
+notify() {
+  osascript -e "display notification \"$1\" with title \"cleanup-disk\"" >/dev/null 2>&1
+}
+
+main() {
+  mkdir -p "$LOG_DIR"
+  [ -t 1 ] || exec >>"$LOG_DIR/$(date +%F).log" 2>&1
+  log "start (dry run: $DRY_RUN), $(df -h / | awk 'NR==2 { print $4 }') available"
+
+  clean_node_module_caches
+  clean_go_build_cache
+  clean_package_manager_caches
+  clean_dev_tool_caches
+  clean_browser_caches
+  clean_stale_temp_files
+  prune_docker
+  reap_idle_mosh_servers
+  report_orphaned_claude_sessions
+  report_merged_worktrees
+
+  find "$LOG_DIR" -name '*.log' -mtime +"$LOG_RETENTION_DAYS" -delete 2>/dev/null
+  log "done, freed $(as_gb "$freed_kb") on the host, $(df -h / | awk 'NR==2 { print $4 }') available"
+  [ -n "$report_lines" ] && log "needs a look (run /cleanup-disk):$report_lines"
+  notify "Freed $(as_gb "$freed_kb")$([ -n "$report_lines" ] && echo ', see log for items to review')"
+}
+
+main "$@"
