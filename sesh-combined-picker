@@ -176,7 +176,7 @@ gen_rows() {
   # containing '|' survive (read merges trailing fields into the final var).
   # Lane windows (@lane_named) show their window name, matching the tmux tabs.
   tmux list-windows -a -F \
-    '#{window_id}|#{session_last_attached}|#{session_name}|#{window_index}|#{pane_id}|#{pane_current_command}|#{?window_active,1,0}|#{?session_attached,1,0}|#{?@lane_named,#{window_name},#{?#{==:#{pane_title},#H},#{window_name},#{pane_title}}}' \
+    '#{window_id}|#{session_last_attached}|#{session_name}|#{window_index}|#{pane_id}|#{pane_current_command}|#{?window_active,1,0}|#{?session_attached,1,0}|#{=1:pane_title}|#{?@lane_named,#{window_name},#{?#{==:#{pane_title},#H},#{window_name},#{pane_title}}}' \
     2>/dev/null \
   | awk -F'|' -v now="$now" -v mrulog="$MRU_LOG" -v compact="$COMPACT" '
       BEGIN {
@@ -196,16 +196,17 @@ gen_rows() {
       }
       {
         wid=$1; sla=$2; sess=$3; idx=$4; pane=$5; cmd=$6; active=$7; attached=$8
-        name=$9; for (i=10; i<=NF; i++) name = name "|" $i
+        title_lead=$9
+        name=$10; for (i=11; i<=NF; i++) name = name "|" $i
         if (wid in mru) { tier = 1; ts = mru[wid]; disp = ago(mru[wid]) }
         else            { tier = 0; ts = sla;      disp = "-" }
-        printf "%s|%s\t%s\t%s\t%s\t%s\t%s\t%s:%s\t%s\t%s\n", \
-          tier, ts, wid, pane, cmd, active, attached, sess, idx, disp, name
+        printf "%s|%s\t%s\t%s\t%s\t%s\t%s\t%s:%s\t%s\t%s\t%s\n", \
+          tier, ts, wid, pane, cmd, active, attached, sess, idx, disp, title_lead, name
       }
     ' \
   | sort -t'|' -k1,1rn -k2,2rn \
   | cut -d'	' -f2- \
-  | while IFS=$'\t' read -r wid pane cmd active attached sess_idx time_ago name; do
+  | while IFS=$'\t' read -r wid pane cmd active attached sess_idx time_ago title_lead name; do
       # Marker: "you are here" wins over "waiting". Bare shell prompts are NOT
       # marked "!" — only real pending decisions earn it.
       marker=" "
@@ -238,7 +239,8 @@ gen_rows() {
       # Colour Claude sessions so each is visually distinct. Claude sets
       # pane_title to "✳ <name>" idle, "<spinner> <name>" streaming. Hash on
       # sess_idx — stable across spinner frames so the colour doesn'\''t flicker.
-      if [[ "$name" == [⠀-⣿✳✢]* ]]; then
+      # Test the title, not the name: lane windows show their window name.
+      if [[ "$title_lead" == [⠀-⣿✳✢] ]]; then
         coloured_name=$(printf '\033[38;5;%sm%s\033[0m' "$(colour_for "$sess_idx")" "$name")
       else
         coloured_name="$name"
