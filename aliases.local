@@ -5,5 +5,8 @@ alias v="nvim"
 alias pgstart="brew services start postgresql"
 alias pgstop="brew services stop postgresql"
 
+# Claude Code
+alias c="claude update && claude"
+
 # Dotfiles and laptop build
 alias sysup="rcup && sh ~/.laptop.local 2>&1 | tee ~/laptop.log"
