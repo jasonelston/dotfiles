@@ -6,11 +6,14 @@
 # pass an explicit `--server` path, so the fix has to live server-side, here.
 if [[ ! -o interactive ]]; then
   export PATH="/opt/homebrew/bin:$PATH"
+  # mosh-server waits forever for its roaming client by default, so every
+  # abandoned Termius session leaves a live mosh-server plus a phone-sized
+  # tmux client that drags windows down to 52x40 (window-size latest). Exit
+  # after 24h without network contact from the client instead. That is shorter
+  # than the week mosh-server(1) suggests because tmux keeps the work, so an
+  # expired server costs only a reconnect.
+  export MOSH_SERVER_NETWORK_TMOUT=86400
 fi
-
-# mosh-server reads this when `ssh host mosh-server` starts it, and exits after a
-# week with no contact from its client instead of living forever.
-export MOSH_SERVER_NETWORK_TMOUT=604800
 
 # thoughtbot's ~/.zshenv prints a warning to stderr whenever .zshenv.local edits
 # PATH (it expects PATH work in .zshrc.local). That guidance targets the interactive
