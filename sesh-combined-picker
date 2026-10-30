@@ -174,9 +174,10 @@ gen_rows() {
   # Tier-first sort keeps MRU-backed rows above unvisited rows even when both
   # timestamps are recent. Output is TAB-separated with name LAST so names
   # containing '|' survive (read merges trailing fields into the final var).
-  # Lane windows (@lane_named) show their window name, matching the tmux tabs.
+  # Lane windows (@lane_named) show their window name behind Claude Code's
+  # ✳/spinner state marker, matching the tmux tabs.
   tmux list-windows -a -F \
-    '#{window_id}|#{session_last_attached}|#{session_name}|#{window_index}|#{pane_id}|#{pane_current_command}|#{?window_active,1,0}|#{?session_attached,1,0}|#{=1:pane_title}|#{?@lane_named,#{window_name},#{?#{==:#{pane_title},#H},#{window_name},#{pane_title}}}' \
+    '#{window_id}|#{session_last_attached}|#{session_name}|#{window_index}|#{pane_id}|#{pane_current_command}|#{?window_active,1,0}|#{?session_attached,1,0}|#{=1:pane_title}|#{?@lane_named,#{=1:pane_title} #{window_name},#{?#{==:#{pane_title},#H},#{window_name},#{pane_title}}}' \
     2>/dev/null \
   | awk -F'|' -v now="$now" -v mrulog="$MRU_LOG" -v compact="$COMPACT" '
       BEGIN {
