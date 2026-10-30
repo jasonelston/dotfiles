@@ -13,7 +13,8 @@ set -u
 # launchd starts agents with PATH=/usr/bin:/bin:/usr/sbin:/sbin only.
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.asdf/shims:/usr/bin:/bin:/usr/sbin:/sbin"
 
-LOG_DIR="$HOME/Library/Logs/cleanup-disk"
+# Not under ~/Library/Logs: the interactive /cleanup-disk command empties that folder.
+LOG_DIR="$HOME/.local/state/cleanup-disk"
 CODE_ROOT="$HOME/code/github.com"
 CLAUDE_TMP="/private/tmp/claude-$(id -u)"
 # Clearing the Go cache every day would make every first build cold. Go trims
@@ -54,12 +55,12 @@ remove_paths() {
 remove_files_older_than() {
   root=$1 days=$2
   [ -d "$root" ] || return 0
-  old_kb=$(find "$root" -type f -mtime +"$days" -not -path "$LOG_DIR/*" -print0 2>/dev/null \
+  old_kb=$(find "$root" -type f -mtime +"$days" -print0 2>/dev/null \
     | xargs -0 du -sk 2>/dev/null | awk '{ total += $1 } END { print total + 0 }')
   log "remove $(as_gb "$old_kb") of files older than ${days}d in $root"
   freed_kb=$((freed_kb + old_kb))
   is_dry_run && return 0
-  find "$root" -type f -mtime +"$days" -not -path "$LOG_DIR/*" -delete 2>/dev/null
+  find "$root" -type f -mtime +"$days" -delete 2>/dev/null
   # An empty directory can be a live session's fresh scratchpad, so age gates it too.
   find "$root" -mindepth 1 -type d -empty -mtime +"$days" -delete 2>/dev/null
 }

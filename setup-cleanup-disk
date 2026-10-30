@@ -14,7 +14,8 @@ fancy_echo() { printf "\n%s\n" "$*"; }
 DOTFILES_LOCAL="${DOTFILES_LOCAL:-$HOME/dotfiles-local}"
 LABEL="com.jasonelston.cleanup-disk-daily"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-LOG_DIR="$HOME/Library/Logs/cleanup-disk"
+# Not under ~/Library/Logs: the interactive /cleanup-disk command empties that folder.
+LOG_DIR="$HOME/.local/state/cleanup-disk"
 DOMAIN="gui/$(id -u)"
 
 render_plist() {
