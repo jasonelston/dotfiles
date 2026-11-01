@@ -85,7 +85,7 @@ the absolute path.
 was asleep). It runs unattended and deletes only what rebuilds itself:
 
 - `node_modules/.cache` under `~/code/github.com`
-- the Go build cache, only when it is over 10 GB
+- the Go build cache, only when it is over 3 GB
 - brew, npm, yarn and pip caches, and dev-tool caches in `~/Library/Caches`
 - Chrome, Arc and Dia caches, only when that browser is closed
 - temp files and `~/Library/Logs` files older than 7 days

@@ -18,7 +18,7 @@ CODE_ROOT="$HOME/code/github.com"
 CLAUDE_TMP="/private/tmp/claude-$(id -u)"
 # Clearing the Go cache every day would make every first build cold. Go trims
 # entries unused for 5 days itself, so only clear it when that is not keeping up.
-GO_CACHE_LIMIT_KB=$((10 * 1024 * 1024))
+GO_CACHE_LIMIT_KB=$((3 * 1024 * 1024))
 STALE_DAYS=7
 LOG_RETENTION_DAYS=30
 TERMINALS="tmux|iTerm2|Terminal|Ghostty|kitty|alacritty|wezterm|Warp|Hyper|screen"
