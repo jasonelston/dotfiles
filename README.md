@@ -77,11 +77,11 @@ sessions, and zoxide directories. `laptop.local` symlinks it into `~/.bin/`
 for command-line use; the tmux bindings (`prefix + K`, `Cmd + K`) point at
 the absolute path.
 
-### Daily disk cleanup
+### Scheduled disk cleanup
 
 `laptop.local` runs `setup-cleanup-disk`, which installs
 `~/dotfiles-local/cleanup-disk-daily` as the launchd agent
-`com.jasonelston.cleanup-disk-daily` (daily at 03:00, or on wake if the Mac
+`com.jasonelston.cleanup-disk-daily` (every 6 hours from 03:00, or on wake if the Mac
 was asleep). It runs unattended and deletes only what rebuilds itself:
 
 - `node_modules/.cache` under `~/code/github.com`

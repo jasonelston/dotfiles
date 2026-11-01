@@ -79,7 +79,7 @@ fancy_echo "Installing tmux plugins via TPM ..."
 fancy_echo "Configuring remote access ..."
 sh "$HOME/dotfiles-local/setup-remote-access"
 
-# Daily unattended cleanup of rebuildable caches, stale temp files and idle
-# mosh-servers (launchd agent, 03:00). Idempotent.
-fancy_echo "Configuring daily disk cleanup ..."
+# Unattended cleanup of rebuildable caches, stale temp files and idle
+# mosh-servers (launchd agent, every 6 hours). Idempotent.
+fancy_echo "Configuring disk cleanup ..."
 sh "$HOME/dotfiles-local/setup-cleanup-disk"

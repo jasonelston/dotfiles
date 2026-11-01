@@ -1,8 +1,8 @@
 #!/bin/sh
-# setup-cleanup-disk - install cleanup-disk-daily as a launchd agent (daily, 03:00).
+# setup-cleanup-disk - install cleanup-disk-daily as a launchd agent (every 6 hours from 03:00).
 #
 # Run from laptop.local (via `sysup`), or standalone. Idempotent: the agent is
-# reloaded only when its plist changes. A Mac asleep at 03:00 runs it on wake.
+# reloaded only when its plist changes. A Mac asleep at a run time runs it on wake.
 #
 #   setup-cleanup-disk               install or refresh
 #   setup-cleanup-disk --uninstall   unload and remove the agent
@@ -31,12 +31,32 @@ render_plist() {
     <string>$DOTFILES_LOCAL/cleanup-disk-daily</string>
   </array>
   <key>StartCalendarInterval</key>
-  <dict>
-    <key>Hour</key>
-    <integer>3</integer>
-    <key>Minute</key>
-    <integer>0</integer>
-  </dict>
+  <array>
+    <dict>
+      <key>Hour</key>
+      <integer>3</integer>
+      <key>Minute</key>
+      <integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key>
+      <integer>9</integer>
+      <key>Minute</key>
+      <integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key>
+      <integer>15</integer>
+      <key>Minute</key>
+      <integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key>
+      <integer>21</integer>
+      <key>Minute</key>
+      <integer>0</integer>
+    </dict>
+  </array>
   <key>ProcessType</key>
   <string>Background</string>
   <key>LowPriorityIO</key>
@@ -58,19 +78,19 @@ install_agent() {
   mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
   rendered=$(render_plist)
   if is_loaded && [ -f "$PLIST" ] && [ "$rendered" = "$(cat "$PLIST")" ]; then
-    fancy_echo "Daily disk cleanup already installed: $PLIST (skipping)."
+    fancy_echo "Disk cleanup already installed: $PLIST (skipping)."
     return 0
   fi
   printf '%s\n' "$rendered" > "$PLIST"
   is_loaded && launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null
   launchctl bootstrap "$DOMAIN" "$PLIST"
-  fancy_echo "Daily disk cleanup installed: runs at 03:00, logs to $LOG_DIR/."
+  fancy_echo "Disk cleanup installed: runs at 03:00, 09:00, 15:00 and 21:00, logs to $LOG_DIR/."
 }
 
 uninstall_agent() {
   is_loaded && launchctl bootout "$DOMAIN/$LABEL"
   rm -f "$PLIST"
-  fancy_echo "Daily disk cleanup removed. Logs kept in $LOG_DIR/."
+  fancy_echo "Disk cleanup removed. Logs kept in $LOG_DIR/."
 }
 
 case "${1:-}" in

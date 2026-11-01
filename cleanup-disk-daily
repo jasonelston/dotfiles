@@ -1,5 +1,5 @@
 #!/bin/bash
-# cleanup-disk-daily - unattended daily disk and process cleanup for this Mac.
+# cleanup-disk-daily - unattended disk and process cleanup for this Mac.
 #
 # Installed as a launchd agent by setup-cleanup-disk (run from laptop.local).
 # It deletes only what rebuilds itself. Anything that can hold work - worktrees,
