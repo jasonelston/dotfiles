@@ -94,7 +94,7 @@ was asleep). It runs unattended and deletes only what rebuilds itself:
 
 It never touches worktrees, Docker volumes, Claude sessions or Playwright
 browsers. It reports them instead, at the end of
-`~/Library/Logs/cleanup-disk/<date>.log`. Act on the report with `/cleanup-disk`.
+`~/.local/state/cleanup-disk/<date>.log`. Act on the report with `/cleanup-disk`.
 
     CLEANUP_DISK_DRY_RUN=1 ~/dotfiles-local/cleanup-disk-daily   # preview
     sh ~/dotfiles-local/setup-cleanup-disk --uninstall           # remove
